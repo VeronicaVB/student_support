@@ -1,0 +1,100 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<XMLDB PATH="local/student_support/db" VERSION="20250106" COMMENT="XMLDB file for local_student_support plugin"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:noNamespaceSchemaLocation="../../../lib/xmldb/xmldb.xsd"
+>
+  <TABLES>
+    <!-- Conversation messages table -->
+    <TABLE NAME="local_studentsupport_messages" COMMENT="Stores conversation messages between students and the support agent">
+      <FIELDS>
+        <FIELD NAME="id" TYPE="int" LENGTH="10" NOTNULL="true" SEQUENCE="true"/>
+        <FIELD NAME="sessionid" TYPE="char" LENGTH="64" NOTNULL="true" SEQUENCE="false" COMMENT="Unique session identifier"/>
+        <FIELD NAME="userid" TYPE="int" LENGTH="10" NOTNULL="true" SEQUENCE="false" COMMENT="User ID"/>
+        <FIELD NAME="courseid" TYPE="int" LENGTH="10" NOTNULL="true" SEQUENCE="false" COMMENT="Course context ID"/>
+        <FIELD NAME="role" TYPE="char" LENGTH="20" NOTNULL="true" SEQUENCE="false" COMMENT="Message role: user or assistant"/>
+        <FIELD NAME="content" TYPE="text" NOTNULL="true" SEQUENCE="false" COMMENT="Message content"/>
+        <FIELD NAME="metadata" TYPE="text" NOTNULL="false" SEQUENCE="false" COMMENT="JSON metadata (tokens, model, etc.)"/>
+        <FIELD NAME="timecreated" TYPE="int" LENGTH="10" NOTNULL="true" SEQUENCE="false"/>
+      </FIELDS>
+      <KEYS>
+        <KEY NAME="primary" TYPE="primary" FIELDS="id"/>
+        <KEY NAME="userid_fk" TYPE="foreign" FIELDS="userid" REFTABLE="user" REFFIELDS="id"/>
+        <KEY NAME="courseid_fk" TYPE="foreign" FIELDS="courseid" REFTABLE="course" REFFIELDS="id"/>
+      </KEYS>
+      <INDEXES>
+        <INDEX NAME="sessionid_idx" UNIQUE="false" FIELDS="sessionid"/>
+        <INDEX NAME="userid_courseid_idx" UNIQUE="false" FIELDS="userid, courseid"/>
+        <INDEX NAME="timecreated_idx" UNIQUE="false" FIELDS="timecreated"/>
+      </INDEXES>
+    </TABLE>
+
+    <!-- Conversation state table -->
+    <TABLE NAME="local_studentsupport_state" COMMENT="Stores current conversation state for each session">
+      <FIELDS>
+        <FIELD NAME="id" TYPE="int" LENGTH="10" NOTNULL="true" SEQUENCE="true"/>
+        <FIELD NAME="sessionid" TYPE="char" LENGTH="64" NOTNULL="true" SEQUENCE="false" COMMENT="Unique session identifier"/>
+        <FIELD NAME="userid" TYPE="int" LENGTH="10" NOTNULL="true" SEQUENCE="false" COMMENT="User ID"/>
+        <FIELD NAME="courseid" TYPE="int" LENGTH="10" NOTNULL="true" SEQUENCE="false" COMMENT="Course context ID"/>
+        <FIELD NAME="currentstate" TYPE="char" LENGTH="50" NOTNULL="true" DEFAULT="new" SEQUENCE="false" COMMENT="Current state of the conversation"/>
+        <FIELD NAME="guidanceattempts" TYPE="int" LENGTH="3" NOTNULL="true" DEFAULT="0" SEQUENCE="false" COMMENT="Number of guidance attempts in current topic"/>
+        <FIELD NAME="currenttopic" TYPE="char" LENGTH="255" NOTNULL="false" SEQUENCE="false" COMMENT="Current topic being discussed"/>
+        <FIELD NAME="statedata" TYPE="text" NOTNULL="false" SEQUENCE="false" COMMENT="JSON serialized state data"/>
+        <FIELD NAME="timecreated" TYPE="int" LENGTH="10" NOTNULL="true" SEQUENCE="false"/>
+        <FIELD NAME="timemodified" TYPE="int" LENGTH="10" NOTNULL="true" SEQUENCE="false"/>
+      </FIELDS>
+      <KEYS>
+        <KEY NAME="primary" TYPE="primary" FIELDS="id"/>
+        <KEY NAME="userid_fk" TYPE="foreign" FIELDS="userid" REFTABLE="user" REFFIELDS="id"/>
+        <KEY NAME="courseid_fk" TYPE="foreign" FIELDS="courseid" REFTABLE="course" REFFIELDS="id"/>
+      </KEYS>
+      <INDEXES>
+        <INDEX NAME="sessionid_idx" UNIQUE="true" FIELDS="sessionid"/>
+        <INDEX NAME="userid_courseid_idx" UNIQUE="false" FIELDS="userid, courseid"/>
+      </INDEXES>
+    </TABLE>
+
+    <!-- Course-level configuration -->
+    <TABLE NAME="local_studentsupport_course" COMMENT="Course-specific configuration for the support agent">
+      <FIELDS>
+        <FIELD NAME="id" TYPE="int" LENGTH="10" NOTNULL="true" SEQUENCE="true"/>
+        <FIELD NAME="courseid" TYPE="int" LENGTH="10" NOTNULL="true" SEQUENCE="false" COMMENT="Course ID"/>
+        <FIELD NAME="enabled" TYPE="int" LENGTH="1" NOTNULL="true" DEFAULT="1" SEQUENCE="false" COMMENT="Whether agent is enabled for this course"/>
+        <FIELD NAME="overridecurriculum" TYPE="int" LENGTH="1" NOTNULL="true" DEFAULT="0" SEQUENCE="false" COMMENT="Override site curriculum settings"/>
+        <FIELD NAME="curriculumname" TYPE="char" LENGTH="255" NOTNULL="false" SEQUENCE="false" COMMENT="Course-specific curriculum name"/>
+        <FIELD NAME="gradelevel" TYPE="char" LENGTH="50" NOTNULL="false" SEQUENCE="false" COMMENT="Grade level for this course"/>
+        <FIELD NAME="subjectarea" TYPE="char" LENGTH="100" NOTNULL="false" SEQUENCE="false" COMMENT="Subject area for this course"/>
+        <FIELD NAME="customconfig" TYPE="text" NOTNULL="false" SEQUENCE="false" COMMENT="JSON custom configuration"/>
+        <FIELD NAME="timecreated" TYPE="int" LENGTH="10" NOTNULL="true" SEQUENCE="false"/>
+        <FIELD NAME="timemodified" TYPE="int" LENGTH="10" NOTNULL="true" SEQUENCE="false"/>
+      </FIELDS>
+      <KEYS>
+        <KEY NAME="primary" TYPE="primary" FIELDS="id"/>
+        <KEY NAME="courseid_fk" TYPE="foreign-unique" FIELDS="courseid" REFTABLE="course" REFFIELDS="id"/>
+      </KEYS>
+    </TABLE>
+
+    <!-- Conversation summaries for long-term memory -->
+    <TABLE NAME="local_studentsupport_summary" COMMENT="Conversation summaries for long-term memory">
+      <FIELDS>
+        <FIELD NAME="id" TYPE="int" LENGTH="10" NOTNULL="true" SEQUENCE="true"/>
+        <FIELD NAME="sessionid" TYPE="char" LENGTH="64" NOTNULL="true" SEQUENCE="false" COMMENT="Session identifier"/>
+        <FIELD NAME="userid" TYPE="int" LENGTH="10" NOTNULL="true" SEQUENCE="false" COMMENT="User ID"/>
+        <FIELD NAME="courseid" TYPE="int" LENGTH="10" NOTNULL="true" SEQUENCE="false" COMMENT="Course ID"/>
+        <FIELD NAME="summary" TYPE="text" NOTNULL="true" SEQUENCE="false" COMMENT="Summary of the conversation"/>
+        <FIELD NAME="topics" TYPE="text" NOTNULL="false" SEQUENCE="false" COMMENT="JSON array of topics discussed"/>
+        <FIELD NAME="outcome" TYPE="char" LENGTH="50" NOTNULL="false" SEQUENCE="false" COMMENT="Conversation outcome"/>
+        <FIELD NAME="messagecount" TYPE="int" LENGTH="5" NOTNULL="true" DEFAULT="0" SEQUENCE="false" COMMENT="Number of messages in session"/>
+        <FIELD NAME="timecreated" TYPE="int" LENGTH="10" NOTNULL="true" SEQUENCE="false"/>
+      </FIELDS>
+      <KEYS>
+        <KEY NAME="primary" TYPE="primary" FIELDS="id"/>
+        <KEY NAME="userid_fk" TYPE="foreign" FIELDS="userid" REFTABLE="user" REFFIELDS="id"/>
+        <KEY NAME="courseid_fk" TYPE="foreign" FIELDS="courseid" REFTABLE="course" REFFIELDS="id"/>
+      </KEYS>
+      <INDEXES>
+        <INDEX NAME="sessionid_idx" UNIQUE="true" FIELDS="sessionid"/>
+        <INDEX NAME="userid_courseid_idx" UNIQUE="false" FIELDS="userid, courseid"/>
+      </INDEXES>
+    </TABLE>
+  </TABLES>
+</XMLDB>
