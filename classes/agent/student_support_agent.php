@@ -17,6 +17,11 @@
 namespace local_student_support\agent;
 
 use local_student_support\agent\actions\action_interface;
+use local_student_support\agent\actions\base_action;
+use local_student_support\agent\prompts\system_prompt;
+use local_student_support\ai\openai_client;
+use local_student_support\ai\tool_registry;
+use local_student_support\ai\function_call_handler;
 use local_student_support\rules\academic_integrity;
 use local_student_support\rules\privacy;
 use local_student_support\rules\tone;
@@ -30,20 +35,23 @@ defined('MOODLE_INTERNAL') || die();
  * Implements the GAME loop pattern:
  * - Gather: Collect input and context
  * - Analyze: Detect intent and evaluate rules
- * - Match: Select appropriate action
+ * - Match: Select appropriate action (via LLM function calling OR rule-based)
  * - Execute: Perform action and generate response
  *
  * IMPORTANT: This class orchestrates the agent logic. All decision-making
  * rules and constraints are defined in PHP, NOT delegated to the AI model.
- * Neuron AI is used ONLY for:
- * - Sending prompts to the AI provider
- * - Receiving and parsing responses
+ * The LLM is used ONLY for:
+ * - Structured routing (function calling / tool selection)
+ * - Language generation within strict constraints
  *
  * @package   local_student_support
  * @copyright 2025, Veronica Bermegui
  * @license   http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
 class student_support_agent {
+
+    /** @var bool Use LLM for action selection via function calling. */
+    private const USE_LLM_ROUTING = true;
 
     /** @var agent_config Agent configuration. */
     private agent_config $config;
@@ -56,6 +64,15 @@ class student_support_agent {
 
     /** @var action_selector Action selection handler. */
     private action_selector $actionselector;
+
+    /** @var tool_registry Tool registry for LLM function calling. */
+    private tool_registry $toolregistry;
+
+    /** @var function_call_handler Function call handler. */
+    private function_call_handler $functionhandler;
+
+    /** @var openai_client OpenAI client. */
+    private openai_client $llmclient;
 
     /** @var academic_integrity Academic integrity rules. */
     private academic_integrity $academicintegrityrules;
@@ -87,6 +104,11 @@ class student_support_agent {
 
         $this->intentdetector = new intent_detector();
         $this->actionselector = new action_selector($this->config);
+
+        // Initialize AI components.
+        $this->toolregistry = new tool_registry();
+        $this->functionhandler = new function_call_handler($this->toolregistry);
+        $this->llmclient = new openai_client();
 
         // Initialize rules.
         $this->academicintegrityrules = new academic_integrity();
@@ -152,10 +174,19 @@ class student_support_agent {
             // GAME Loop execution.
             $context = $this->gather($usermessage);
             $analysis = $this->analyze($context);
-            $action = $this->match($analysis);
-            $response = $this->execute($action, $context, $analysis);
 
-            return $response;
+            // Check if rules block the request.
+            $blocked = $this->check_rule_blocks($analysis);
+            if ($blocked !== null) {
+                return $this->handle_blocked_request($blocked, $context, $analysis);
+            }
+
+            // Use LLM routing or rule-based action selection.
+            if (self::USE_LLM_ROUTING && $this->llmclient->is_configured()) {
+                return $this->process_with_llm_routing($context, $analysis);
+            } else {
+                return $this->process_with_rule_based_routing($context, $analysis);
+            }
 
         } catch (\Exception $e) {
             debugging("Student Support Agent error: " . $e->getMessage(), DEBUG_DEVELOPER);
@@ -169,6 +200,210 @@ class student_support_agent {
     }
 
     /**
+     * Process message using LLM for action routing via function calling.
+     *
+     * @param array $context Gathered context.
+     * @param array $analysis Analysis results.
+     * @return array Response array.
+     */
+    private function process_with_llm_routing(array $context, array $analysis): array {
+        // Build system prompt.
+        $systemprompt = system_prompt::build($this->config, $this->memory, $analysis);
+
+        // Get conversation messages.
+        $messages = $this->memory->get_context_messages();
+
+        // Get tools from registry.
+        $tools = $this->toolregistry->get_tools();
+
+        // Call LLM with function calling.
+        $response = $this->llmclient->ask($systemprompt, $messages, $tools);
+
+        // Handle the response.
+        $result = $this->functionhandler->handle_response($response);
+
+        return $this->process_llm_result($result, $context, $analysis);
+    }
+
+    /**
+     * Process the LLM result and execute appropriate action.
+     *
+     * @param array $result Processed result from function handler.
+     * @param array $context Gathered context.
+     * @param array $analysis Analysis results.
+     * @return array Response array.
+     */
+    private function process_llm_result(array $result, array $context, array $analysis): array {
+        switch ($result['type']) {
+            case 'tool_call':
+                return $this->execute_tool_call($result, $context, $analysis);
+
+            case 'direct_response':
+                return $this->handle_direct_response($result, $context, $analysis);
+
+            case 'text':
+                // LLM returned text without tool call - use as response.
+                return $this->finalize_response($result['content'], 'llm_text', $context, $analysis);
+
+            case 'error':
+                // Fall back to rule-based routing on error.
+                debugging("LLM error, falling back to rule-based: " . ($result['error'] ?? 'unknown'), DEBUG_DEVELOPER);
+                return $this->process_with_rule_based_routing($context, $analysis);
+
+            default:
+                return $this->process_with_rule_based_routing($context, $analysis);
+        }
+    }
+
+    /**
+     * Execute a tool call selected by the LLM.
+     *
+     * @param array $result Tool call result.
+     * @param array $context Gathered context.
+     * @param array $analysis Analysis results.
+     * @return array Response array.
+     */
+    private function execute_tool_call(array $result, array $context, array $analysis): array {
+        $actionclass = $result['action_class'];
+        $arguments = $result['arguments'] ?? [];
+
+        // Validate the action class exists.
+        if (!class_exists($actionclass)) {
+            debugging("Action class not found: {$actionclass}", DEBUG_DEVELOPER);
+            return $this->process_with_rule_based_routing($context, $analysis);
+        }
+
+        // Instantiate and execute the action.
+        $action = new $actionclass();
+
+        if (!($action instanceof base_action)) {
+            debugging("Invalid action class: {$actionclass}", DEBUG_DEVELOPER);
+            return $this->process_with_rule_based_routing($context, $analysis);
+        }
+
+        // Record the action.
+        $this->memory->set_last_action($action->get_name());
+
+        // Execute with arguments from the LLM.
+        $actionresult = $action->execute_with_arguments(
+            $arguments,
+            $context,
+            $analysis,
+            $this->config,
+            $this->memory
+        );
+
+        return $this->finalize_action_result($action, $actionresult, $context, $analysis);
+    }
+
+    /**
+     * Handle a direct response from the LLM (no action needed).
+     *
+     * @param array $result Direct response result.
+     * @param array $context Gathered context.
+     * @param array $analysis Analysis results.
+     * @return array Response array.
+     */
+    private function handle_direct_response(array $result, array $context, array $analysis): array {
+        $message = $result['content'] ?? '';
+        $responsetype = $result['response_type'] ?? 'acknowledgment';
+
+        $this->memory->set_last_action('respond_directly');
+
+        return $this->finalize_response($message, "direct_{$responsetype}", $context, $analysis);
+    }
+
+    /**
+     * Process message using rule-based action selection (fallback).
+     *
+     * @param array $context Gathered context.
+     * @param array $analysis Analysis results.
+     * @return array Response array.
+     */
+    private function process_with_rule_based_routing(array $context, array $analysis): array {
+        // Select action based on rules.
+        $action = $this->actionselector->select(
+            $analysis['intent'],
+            $analysis['current_state'],
+            $this->memory
+        );
+
+        // Record and execute.
+        $this->memory->set_last_action($action->get_name());
+
+        $result = $action->execute($context, $analysis, $this->config, $this->memory);
+
+        return $this->finalize_action_result($action, $result, $context, $analysis);
+    }
+
+    /**
+     * Finalize an action result and update memory.
+     *
+     * @param action_interface $action The executed action.
+     * @param array $result Action result.
+     * @param array $context Gathered context.
+     * @param array $analysis Analysis results.
+     * @return array Response array.
+     */
+    private function finalize_action_result(
+        action_interface $action,
+        array $result,
+        array $context,
+        array $analysis
+    ): array {
+        if ($result['success']) {
+            // Add assistant message to memory.
+            $this->memory->add_message(
+                agent_memory::ROLE_ASSISTANT,
+                $result['message'],
+                $result['metadata'] ?? []
+            );
+
+            // Increment guidance attempts if this was a guidance action.
+            if ($action->is_guidance_action()) {
+                $this->memory->increment_guidance_attempts();
+            }
+
+            // Update state after action.
+            $this->update_state_after_action($action, $result);
+        }
+
+        // Persist memory.
+        $this->memory->save($this->config->should_log_conversations());
+
+        return $result;
+    }
+
+    /**
+     * Finalize a response and update memory.
+     *
+     * @param string $message Response message.
+     * @param string $actionname Action name for metadata.
+     * @param array $context Gathered context.
+     * @param array $analysis Analysis results.
+     * @return array Response array.
+     */
+    private function finalize_response(
+        string $message,
+        string $actionname,
+        array $context,
+        array $analysis
+    ): array {
+        // Add to memory.
+        $this->memory->add_message(agent_memory::ROLE_ASSISTANT, $message);
+        $this->memory->save($this->config->should_log_conversations());
+
+        return [
+            'success' => true,
+            'message' => $message,
+            'metadata' => [
+                'action' => $actionname,
+                'session_id' => $this->memory->get_session_id(),
+            ],
+        ];
+    }
+
+    /**
      * GATHER phase: Collect input and context.
      *
      * @param string $usermessage The user's message.
@@ -179,15 +414,13 @@ class student_support_agent {
         $this->memory->add_message(agent_memory::ROLE_USER, $usermessage);
 
         // Build complete context.
-        $context = [
+        return [
             'user_message' => $usermessage,
             'agent_context' => $this->config->build_agent_context(),
             'memory_summary' => $this->memory->get_memory_summary(),
             'conversation_history' => $this->memory->get_context_messages(),
             'is_new_conversation' => $this->memory->is_new_conversation(),
         ];
-
-        return $context;
     }
 
     /**
@@ -220,73 +453,37 @@ class student_support_agent {
     }
 
     /**
-     * MATCH phase: Select appropriate action.
+     * Check if any rule blocks the request.
      *
      * @param array $analysis Analysis results.
-     * @return action_interface Selected action.
+     * @return array|null Blocking rule result or null.
      */
-    private function match(array $analysis): action_interface {
-        // If any rule blocks the action, select a rule-based response.
+    private function check_rule_blocks(array $analysis): ?array {
         foreach ($analysis['rules'] as $rulename => $result) {
             if ($result['blocked']) {
-                return $this->actionselector->get_blocked_action($rulename, $result);
+                return [
+                    'rule' => $rulename,
+                    'result' => $result,
+                ];
             }
         }
-
-        // If escalation is needed, select escalation action.
-        if ($analysis['should_escalate']) {
-            return $this->actionselector->get_escalation_action();
-        }
-
-        // Select action based on intent and state.
-        $action = $this->actionselector->select(
-            $analysis['intent'],
-            $analysis['current_state'],
-            $this->memory
-        );
-
-        return $action;
+        return null;
     }
 
     /**
-     * EXECUTE phase: Perform action and generate response.
+     * Handle a blocked request.
      *
-     * @param action_interface $action The action to execute.
+     * @param array $blocked Blocking information.
      * @param array $context Gathered context.
      * @param array $analysis Analysis results.
      * @return array Response array.
      */
-    private function execute(action_interface $action, array $context, array $analysis): array {
-        // Record the action being taken.
-        $this->memory->set_last_action($action->get_name());
+    private function handle_blocked_request(array $blocked, array $context, array $analysis): array {
+        $message = $blocked['result']['message'] ?? get_string('message:refusedirectanswer', 'local_student_support');
 
-        // Execute the action.
-        // NOTE: The action will use Neuron AI to generate the response.
-        // The action is responsible for building the prompt and calling the AI.
-        $result = $action->execute($context, $analysis, $this->config, $this->memory);
+        $this->memory->set_last_action('rule_block_' . $blocked['rule']);
 
-        // If the action was successful, update memory.
-        if ($result['success']) {
-            // Add assistant message to memory.
-            $this->memory->add_message(
-                agent_memory::ROLE_ASSISTANT,
-                $result['message'],
-                $result['metadata'] ?? []
-            );
-
-            // Increment guidance attempts if this was a guidance action.
-            if ($action->is_guidance_action()) {
-                $this->memory->increment_guidance_attempts();
-            }
-
-            // Update state after action.
-            $this->update_state_after_action($action, $result);
-        }
-
-        // Persist memory.
-        $this->memory->save($this->config->should_log_conversations());
-
-        return $result;
+        return $this->finalize_response($message, 'blocked_' . $blocked['rule'], $context, $analysis);
     }
 
     /**
@@ -297,18 +494,11 @@ class student_support_agent {
      * @return array Rule evaluation results.
      */
     private function evaluate_rules(array $context, array $intent): array {
-        $results = [];
-
-        // Academic integrity check.
-        $results['academic_integrity'] = $this->academicintegrityrules->evaluate($context, $intent);
-
-        // Privacy check.
-        $results['privacy'] = $this->privacyrules->evaluate($context, $intent);
-
-        // Tone check.
-        $results['tone'] = $this->tonerules->evaluate($context, $intent);
-
-        return $results;
+        return [
+            'academic_integrity' => $this->academicintegrityrules->evaluate($context, $intent),
+            'privacy' => $this->privacyrules->evaluate($context, $intent),
+            'tone' => $this->tonerules->evaluate($context, $intent),
+        ];
     }
 
     /**
@@ -320,22 +510,16 @@ class student_support_agent {
     private function update_state_for_intent(array $intent): void {
         $currentstate = $this->memory->get_current_state();
 
-        // Update topic if detected.
         if (!empty($intent['topic'])) {
             $this->memory->set_current_topic($intent['topic']);
         }
 
-        // State transitions based on intent.
         switch ($intent['type']) {
             case intent_detector::INTENT_ASK_QUESTION:
             case intent_detector::INTENT_NEED_HELP:
                 if ($currentstate === agent_memory::STATE_NEW) {
                     $this->memory->set_current_state(agent_memory::STATE_UNDERSTANDING);
                 }
-                break;
-
-            case intent_detector::INTENT_REQUEST_ANSWER:
-                // Stay in current state, but this will trigger rule evaluation.
                 break;
 
             case intent_detector::INTENT_CONFIRM_UNDERSTANDING:
@@ -345,7 +529,6 @@ class student_support_agent {
                 break;
 
             case intent_detector::INTENT_EXPRESS_FRUSTRATION:
-                // Adjust approach, but don't change state.
                 $this->memory->set_data('student_frustrated', true);
                 break;
 
@@ -365,12 +548,10 @@ class student_support_agent {
     private function update_state_after_action(action_interface $action, array $result): void {
         $currentstate = $this->memory->get_current_state();
 
-        // Transition to guiding after understanding.
         if ($currentstate === agent_memory::STATE_UNDERSTANDING && $action->is_guidance_action()) {
             $this->memory->set_current_state(agent_memory::STATE_GUIDING);
         }
 
-        // If we're escalating, update state.
         if ($action->get_name() === 'escalate') {
             $this->memory->set_current_state(agent_memory::STATE_ESCALATING);
         }
@@ -441,7 +622,6 @@ class student_support_agent {
     public function end_conversation(?string $outcome = null): void {
         $this->memory->set_current_state(agent_memory::STATE_COMPLETED);
 
-        // Generate a simple summary (in future, this could use AI).
         $summary = sprintf(
             'Conversation with %d messages. Topics: %s. Last state: %s.',
             $this->memory->get_message_count(),

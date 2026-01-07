@@ -18,18 +18,20 @@ namespace local_student_support\agent\actions;
 
 use local_student_support\agent\agent_config;
 use local_student_support\agent\agent_memory;
+use local_student_support\ai\openai_client;
 
 defined('MOODLE_INTERNAL') || die();
 
 /**
  * Base class for agent actions.
  *
- * Provides common functionality for all actions.
- * Subclasses must implement the abstract methods.
+ * Provides common functionality for all actions including:
+ * - Prompt building
+ * - LLM execution via OpenAI client
+ * - Response handling
  *
- * NOTE: In this skeleton implementation, the execute() method returns
- * a placeholder response. The actual AI integration via Neuron will be
- * implemented in a future phase.
+ * Subclasses must implement the abstract methods to define
+ * action-specific behavior and prompts.
  *
  * @package   local_student_support
  * @copyright 2025, Veronica Bermegui
@@ -38,10 +40,12 @@ defined('MOODLE_INTERNAL') || die();
 abstract class base_action implements action_interface {
 
     /**
-     * Execute the action.
+     * Execute the action using the LLM.
      *
-     * NOTE: This is a skeleton implementation. The actual execution
-     * will use Neuron AI to send the prompt and receive a response.
+     * This method:
+     * 1. Builds the action-specific prompt
+     * 2. Sends it to the OpenAI API
+     * 3. Returns the formatted response
      *
      * @param array $context Gathered context from GAME loop.
      * @param array $analysis Analysis results from GAME loop.
@@ -55,96 +59,217 @@ abstract class base_action implements action_interface {
         agent_config $config,
         agent_memory $memory
     ): array {
-        // Build the prompt.
+        // Build the prompt for this action.
         $prompt = $this->build_prompt($context, $analysis, $config, $memory);
 
-        // TODO: In future implementation, this will:
-        // 1. Use Neuron AI to send the prompt to the configured AI provider
-        // 2. Parse the response
-        // 3. Return the formatted response
-        //
-        // For now, return a placeholder indicating the action was selected.
+        // Create OpenAI client.
+        $client = new openai_client();
 
+        // Check if client is configured.
+        if (!$client->is_configured()) {
+            return [
+                'success' => false,
+                'message' => get_string('error:notconfigured', 'local_student_support'),
+                'metadata' => [
+                    'action' => $this->get_name(),
+                    'error' => 'api_not_configured',
+                ],
+            ];
+        }
+
+        // Build messages for the API.
+        // For action execution, we use the action prompt as a user message
+        // with the system prompt providing overall context.
+        $messages = [
+            [
+                'role' => 'user',
+                'content' => $prompt,
+            ],
+        ];
+
+        // Build system prompt.
+        $systemprompt = $this->build_action_system_prompt($config, $analysis);
+
+        // Call the LLM (no tools - we want a direct text response).
+        $response = $client->ask($systemprompt, $messages, []);
+
+        // Handle the response.
+        return $this->handle_llm_response($response, $config);
+    }
+
+    /**
+     * Execute the action with tool call arguments.
+     *
+     * This variant is called when the LLM has already selected this action
+     * via function calling and provided arguments.
+     *
+     * @param array $arguments Arguments from the tool call.
+     * @param array $context Gathered context from GAME loop.
+     * @param array $analysis Analysis results from GAME loop.
+     * @param agent_config $config Agent configuration.
+     * @param agent_memory $memory Agent memory.
+     * @return array Response with 'success', 'message', and 'metadata'.
+     */
+    public function execute_with_arguments(
+        array $arguments,
+        array $context,
+        array $analysis,
+        agent_config $config,
+        agent_memory $memory
+    ): array {
+        // Build prompt incorporating the tool arguments.
+        $prompt = $this->build_prompt_with_arguments($arguments, $context, $analysis, $config, $memory);
+
+        // Create OpenAI client.
+        $client = new openai_client();
+
+        if (!$client->is_configured()) {
+            return [
+                'success' => false,
+                'message' => get_string('error:notconfigured', 'local_student_support'),
+                'metadata' => [
+                    'action' => $this->get_name(),
+                    'error' => 'api_not_configured',
+                ],
+            ];
+        }
+
+        $messages = [
+            [
+                'role' => 'user',
+                'content' => $prompt,
+            ],
+        ];
+
+        $systemprompt = $this->build_action_system_prompt($config, $analysis);
+        $response = $client->ask($systemprompt, $messages, []);
+
+        return $this->handle_llm_response($response, $config);
+    }
+
+    /**
+     * Handle the LLM response.
+     *
+     * @param array $response Response from OpenAI client.
+     * @param agent_config $config Agent configuration.
+     * @return array Formatted response for the agent.
+     */
+    protected function handle_llm_response(array $response, agent_config $config): array {
+        if ($response['type'] === openai_client::RESPONSE_ERROR) {
+            return [
+                'success' => false,
+                'message' => get_string('error:apierror', 'local_student_support'),
+                'metadata' => [
+                    'action' => $this->get_name(),
+                    'error' => $response['error'] ?? 'unknown_error',
+                    'api_metadata' => $response['metadata'] ?? [],
+                ],
+            ];
+        }
+
+        if ($response['type'] === openai_client::RESPONSE_TEXT) {
+            return [
+                'success' => true,
+                'message' => $response['content'],
+                'metadata' => [
+                    'action' => $this->get_name(),
+                    'model' => $response['metadata']['model'] ?? $config->get_model(),
+                    'usage' => $response['metadata']['usage'] ?? null,
+                    'duration_ms' => $response['metadata']['duration_ms'] ?? null,
+                ],
+            ];
+        }
+
+        // Unexpected response type.
         return [
-            'success' => true,
-            'message' => $this->get_placeholder_response($context, $analysis, $config),
+            'success' => false,
+            'message' => get_string('error:apierror', 'local_student_support'),
             'metadata' => [
                 'action' => $this->get_name(),
-                'prompt_length' => strlen($prompt),
-                'intent' => $analysis['intent']['type'] ?? 'unknown',
-                'placeholder' => true, // Indicates this is not a real AI response.
+                'error' => 'unexpected_response_type',
+                'response_type' => $response['type'],
             ],
         ];
     }
 
     /**
-     * Get a placeholder response for skeleton implementation.
+     * Build the system prompt for action execution.
      *
-     * @param array $context Gathered context.
-     * @param array $analysis Analysis results.
      * @param agent_config $config Agent configuration.
-     * @return string Placeholder response.
+     * @param array $analysis Analysis results.
+     * @return string System prompt.
      */
-    protected function get_placeholder_response(
-        array $context,
-        array $analysis,
-        agent_config $config
-    ): string {
-        // This will be replaced by actual AI response in future implementation.
-        return sprintf(
-            '[%s action would execute here with %s approach for grade level: %s]',
-            $this->get_name(),
-            $config->get_pedagogical_approach(),
-            $config->get_grade_level() ?: 'not set'
-        );
+    protected function build_action_system_prompt(agent_config $config, array $analysis): string {
+        $agentcontext = $config->build_agent_context();
+
+        $prompt = <<<PROMPT
+You are a Student Support Agent executing a specific pedagogical action.
+
+## Role and Context
+You are operating in a formal educational environment.
+Your role is to support student learning, not to complete tasks or provide final answers.
+You assist students in understanding concepts, instructions, and expectations.
+
+## Current Action: {$this->get_name()}
+
+## Strict Prohibitions (NEVER violate these)
+- NEVER provide final answers or complete solutions
+- NEVER write essays, code, or responses that can be submitted as student work
+- NEVER solve evaluable exercises
+- NEVER evaluate, grade, or judge academic performance
+- NEVER introduce content outside the student's educational level
+- NEVER adopt a casual or peer-like persona
+
+## Current Context
+- Curriculum: {$agentcontext['curriculum']['name']} ({$agentcontext['curriculum']['year']})
+- Student Grade Level: {$agentcontext['student']['grade_level']}
+- Subject Area: {$agentcontext['course']['subject_area']}
+- Response Language: {$agentcontext['behaviour']['response_language']}
+- Pedagogical Approach: {$agentcontext['behaviour']['pedagogical_approach']}
+
+## Response Guidelines
+- Be professional, respectful, and encouraging
+- Structure responses in clear, digestible steps
+- Adapt language complexity to the student's grade level
+- End with a way to verify understanding or invite further questions
+- Keep responses focused and concise
+PROMPT;
+
+        return $prompt;
     }
 
     /**
-     * Build the system prompt with agent context.
+     * Build prompt incorporating tool arguments.
      *
+     * Subclasses can override this to customize how arguments are used.
+     *
+     * @param array $arguments Tool call arguments.
+     * @param array $context Gathered context.
+     * @param array $analysis Analysis results.
      * @param agent_config $config Agent configuration.
-     * @return string System prompt.
+     * @param agent_memory $memory Agent memory.
+     * @return string The prompt.
      */
-    protected function build_system_prompt(agent_config $config): string {
-        $context = $config->build_agent_context();
-        $goals = $config->get_agent_goals();
-        $constraints = $config->get_agent_constraints();
+    protected function build_prompt_with_arguments(
+        array $arguments,
+        array $context,
+        array $analysis,
+        agent_config $config,
+        agent_memory $memory
+    ): string {
+        // Default implementation: include arguments in the base prompt.
+        $baseprompt = $this->build_prompt($context, $analysis, $config, $memory);
 
-        $systemprompt = "You are a Student Support Agent, designed to help students understand their learning materials.\n\n";
-
-        // Add goals.
-        $systemprompt .= "## Your Goals\n";
-        foreach ($goals as $key => $goal) {
-            $systemprompt .= "- {$goal}\n";
+        if (empty($arguments)) {
+            return $baseprompt;
         }
-        $systemprompt .= "\n";
 
-        // Add constraints.
-        $systemprompt .= "## Absolute Constraints (NEVER violate)\n";
-        foreach ($constraints as $key => $constraint) {
-            $systemprompt .= "- {$constraint}\n";
+        $argstext = "\n\n## Action Parameters\n";
+        foreach ($arguments as $key => $value) {
+            $argstext .= "- {$key}: {$value}\n";
         }
-        $systemprompt .= "\n";
 
-        // Add context.
-        $systemprompt .= "## Current Context\n";
-        $systemprompt .= "- Curriculum: {$context['curriculum']['name']} ({$context['curriculum']['year']})\n";
-        $systemprompt .= "- Student Grade Level: {$context['student']['grade_level']}\n";
-        $systemprompt .= "- Subject Area: {$context['course']['subject_area']}\n";
-        $systemprompt .= "- Response Language: {$context['behaviour']['response_language']}\n";
-        $systemprompt .= "- Pedagogical Approach: {$context['behaviour']['pedagogical_approach']}\n";
-        $systemprompt .= "\n";
-
-        // Add response guidelines.
-        $systemprompt .= "## Response Guidelines\n";
-        $systemprompt .= "- Use verbs: explain, guide, reformulate, ask\n";
-        $systemprompt .= "- Structure responses in conceptual steps\n";
-        $systemprompt .= "- Avoid \"final answer\" formats\n";
-        $systemprompt .= "- Verify understanding before closing interactions\n";
-        $systemprompt .= "- If student requests direct answers, redirect pedagogically\n";
-        $systemprompt .= "- Maintain a professional, clear, respectful teacher tone\n";
-
-        return $systemprompt;
+        return $baseprompt . $argstext;
     }
 
     /**
@@ -170,7 +295,8 @@ abstract class base_action implements action_interface {
     /**
      * Get the action-specific instruction.
      *
-     * Subclasses should override this to provide specific instructions.
+     * Subclasses must implement this to provide specific instructions
+     * for the LLM when executing this action.
      *
      * @return string Action-specific instruction.
      */

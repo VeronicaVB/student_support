@@ -148,3 +148,20 @@ $string['privacy:metadata:state:statedata'] = 'The serialized state data.';
 // Cache.
 $string['cachedef_conversationstate'] = 'Caches the current conversation state for active sessions.';
 $string['cachedef_agentconfig'] = 'Caches agent configuration to reduce database queries.';
+
+// Chat interface.
+$string['chat:placeholder'] = 'Type your question here...';
+$string['chat:send'] = 'Send';
+$string['chat:typing'] = 'Agent is thinking...';
+$string['chat:online'] = 'Online';
+$string['chat:offline'] = 'Offline';
+$string['chat:newsession'] = 'Start new conversation';
+$string['chat:messagesarea'] = 'Chat messages';
+$string['chat:now'] = 'Just now';
+$string['chat:retry'] = 'Retry';
+$string['chat:hint'] = 'Press Enter to send, Shift+Enter for new line';
+$string['chat:emptymessage'] = 'Please enter a message';
+$string['chat:messagesent'] = 'Message sent';
+$string['chat:messagereceived'] = 'New message from agent';
+$string['chat:connectionerror'] = 'Connection error. Please try again.';
+$string['chat:sessionexpired'] = 'Your session has expired. Starting a new conversation.';

@@ -1,0 +1,167 @@
+{{!
+    This file is part of Moodle - http://moodle.org/
+
+    Moodle is free software: you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+
+    Moodle is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with Moodle.  If not, see <http://www.gnu.org/licenses/>.
+}}
+{{!
+    @template local_student_support/chat
+
+    Student Support Agent chat interface.
+
+    Context variables required for this template:
+    * courseid - The course ID
+    * sessionid - The chat session ID
+    * userid - The user ID
+    * username - The user's full name
+    * userinitials - The user's initials
+    * welcomemessage - Welcome message from the agent
+    * placeholdertext - Placeholder text for input
+    * sendlabel - Label for send button
+    * typingindicator - Typing indicator text
+    * coursename - Short course name
+
+    Example context (json):
+    {
+        "courseid": 2,
+        "sessionid": "abc123",
+        "userid": 5,
+        "username": "John Doe",
+        "userinitials": "JD",
+        "welcomemessage": "Hello! How can I help you today?",
+        "placeholdertext": "Type your message...",
+        "sendlabel": "Send",
+        "typingindicator": "Agent is typing...",
+        "coursename": "Math 101"
+    }
+}}
+<div class="student-support-chat-container"
+     id="student-support-chat"
+     data-courseid="{{courseid}}"
+     data-sessionid="{{sessionid}}"
+     data-userid="{{userid}}">
+
+    {{! Chat Header }}
+    <div class="chat-header">
+        <div class="chat-header-info">
+            <div class="agent-avatar">
+                <span class="agent-icon">{{#pix}}i/competencies, core{{/pix}}</span>
+            </div>
+            <div class="agent-details">
+                <h4 class="agent-name">{{#str}}pluginname, local_student_support{{/str}}</h4>
+                <span class="agent-status">
+                    <span class="status-indicator online"></span>
+                    {{#str}}chat:online, local_student_support{{/str}}
+                </span>
+            </div>
+        </div>
+        <div class="chat-header-actions">
+            <button type="button" class="btn btn-sm btn-outline-secondary" id="chat-new-session" title="{{#str}}chat:newsession, local_student_support{{/str}}">
+                {{#pix}}i/reload, core{{/pix}}
+            </button>
+        </div>
+    </div>
+
+    {{! Chat Messages Area }}
+    <div class="chat-messages" id="chat-messages" role="log" aria-live="polite" aria-label="{{#str}}chat:messagesarea, local_student_support{{/str}}">
+        {{! Welcome message from agent }}
+        <div class="message-wrapper agent-message">
+            <div class="message-avatar">
+                <span class="avatar-icon">{{#pix}}i/competencies, core{{/pix}}</span>
+            </div>
+            <div class="message-content">
+                <div class="message-bubble">
+                    <p>{{{welcomemessage}}}</p>
+                </div>
+                <span class="message-time" data-time="{{#js}}Date.now(){{/js}}">{{#str}}chat:now, local_student_support{{/str}}</span>
+            </div>
+        </div>
+    </div>
+
+    {{! Typing Indicator }}
+    <div class="typing-indicator" id="typing-indicator" style="display: none;">
+        <div class="message-wrapper agent-message">
+            <div class="message-avatar">
+                <span class="avatar-icon">{{#pix}}i/competencies, core{{/pix}}</span>
+            </div>
+            <div class="message-content">
+                <div class="typing-dots">
+                    <span class="dot"></span>
+                    <span class="dot"></span>
+                    <span class="dot"></span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    {{! Error Display }}
+    <div class="chat-error" id="chat-error" style="display: none;" role="alert">
+        <div class="alert alert-danger mb-0">
+            <span class="error-message"></span>
+            <button type="button" class="btn btn-sm btn-link retry-btn">{{#str}}chat:retry, local_student_support{{/str}}</button>
+        </div>
+    </div>
+
+    {{! Chat Input Area }}
+    <div class="chat-input-area">
+        <form id="chat-form" class="chat-form">
+            <div class="input-wrapper">
+                <textarea
+                    id="chat-input"
+                    class="chat-input form-control"
+                    placeholder="{{placeholdertext}}"
+                    rows="1"
+                    maxlength="2000"
+                    aria-label="{{placeholdertext}}"
+                    autocomplete="off"></textarea>
+                <button type="submit" class="btn btn-primary send-btn" id="send-btn" disabled>
+                    <span class="send-icon">{{#pix}}t/message, core{{/pix}}</span>
+                    <span class="sr-only">{{sendlabel}}</span>
+                </button>
+            </div>
+            <div class="input-footer">
+                <span class="char-counter"><span id="char-count">0</span>/2000</span>
+                <span class="input-hint">{{#str}}chat:hint, local_student_support{{/str}}</span>
+            </div>
+        </form>
+    </div>
+</div>
+
+{{! Message Templates for JS }}
+<template id="user-message-template">
+    <div class="message-wrapper user-message">
+        <div class="message-content">
+            <div class="message-bubble">
+                <p class="message-text"></p>
+            </div>
+            <span class="message-time"></span>
+        </div>
+        <div class="message-avatar user-avatar">
+            <span class="avatar-initials">{{userinitials}}</span>
+        </div>
+    </div>
+</template>
+
+<template id="agent-message-template">
+    <div class="message-wrapper agent-message">
+        <div class="message-avatar">
+            <span class="avatar-icon">{{#pix}}i/competencies, core{{/pix}}</span>
+        </div>
+        <div class="message-content">
+            <div class="message-bubble">
+                <div class="message-text"></div>
+            </div>
+            <span class="message-time"></span>
+        </div>
+    </div>
+</template>

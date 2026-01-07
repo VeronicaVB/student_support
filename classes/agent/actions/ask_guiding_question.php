@@ -18,6 +18,7 @@ namespace local_student_support\agent\actions;
 
 use local_student_support\agent\agent_config;
 use local_student_support\agent\agent_memory;
+use local_student_support\agent\prompts\system_prompt;
 
 defined('MOODLE_INTERNAL') || die();
 
@@ -109,7 +110,9 @@ INSTRUCTION;
         agent_config $config,
         agent_memory $memory
     ): string {
-        $systemprompt = $this->build_system_prompt($config);
+        // $systemprompt = $this->build_system_prompt($config);
+        $systemprompt = new system_prompt();
+        $systemprompt = $systemprompt->build($config, $memory, $analysis);
         $actioninstruction = $this->get_action_instruction();
         $history = $this->format_conversation_history($context['conversation_history']);
         $usermessage = $context['user_message'];

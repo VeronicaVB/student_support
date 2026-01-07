@@ -15,7 +15,7 @@
 // along with Moodle.  If not, see <http://www.gnu.org/licenses/>.
 
 /**
- * Version metadata for the local_student_support plugin.
+ * External services definitions for local_student_support.
  *
  * @package   local_student_support
  * @copyright 2025, Veronica Bermegui
@@ -24,10 +24,14 @@
 
 defined('MOODLE_INTERNAL') || die();
 
-$plugin->component = 'local_student_support';
-$plugin->version = 2025010701;
-$plugin->requires = 2022112800; // Moodle 4.1.
-$plugin->maturity = MATURITY_ALPHA;
-$plugin->release = '0.1.0';
-
-$plugin->dependencies = [];
+$functions = [
+    'local_student_support_send_message' => [
+        'classname' => 'local_student_support\external\send_message',
+        'methodname' => 'execute',
+        'description' => 'Send a message to the Student Support Agent and receive a response.',
+        'type' => 'write',
+        'ajax' => true,
+        'loginrequired' => true,
+        'capabilities' => 'local/student_support:use',
+    ],
+];
