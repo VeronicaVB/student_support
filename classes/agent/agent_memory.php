@@ -27,6 +27,8 @@ defined('MOODLE_INTERNAL') || die();
  * - Message history management
  * - Guidance attempt counting
  * - Topic tracking
+ * - Explanation tracking (for cognitive phase transitions)
+ * - Understanding confirmation tracking
  * - Persistence (cache + database)
  *
  * @package   local_student_support
@@ -100,6 +102,12 @@ class agent_memory {
 
     /** @var bool Whether state has been modified. */
     private bool $dirty;
+
+    /** @var int Number of explanation attempts for current topic. */
+    private int $explanationcount = 0;
+
+    /** @var bool Whether student has confirmed understanding for current topic. */
+    private bool $hasconfirmedunderstanding = false;
 
     /**
      * Constructor.
@@ -217,6 +225,8 @@ class agent_memory {
         $this->lastaction = null;
         $this->statedata = [];
         $this->messages = [];
+        $this->explanationcount = 0;
+        $this->hasconfirmedunderstanding = false;
         $this->dirty = true;
     }
 
@@ -234,6 +244,8 @@ class agent_memory {
         $this->lastaction = $data['lastaction'] ?? null;
         $this->statedata = $data['statedata'] ?? [];
         $this->messages = $data['messages'] ?? [];
+        $this->explanationcount = $data['explanationcount'] ?? 0;
+        $this->hasconfirmedunderstanding = $data['hasconfirmedunderstanding'] ?? false;
     }
 
     /**
@@ -253,6 +265,8 @@ class agent_memory {
             'lastaction' => $this->lastaction,
             'statedata' => $this->statedata,
             'messages' => $this->messages,
+            'explanationcount' => $this->explanationcount,
+            'hasconfirmedunderstanding' => $this->hasconfirmedunderstanding,
         ];
     }
 
@@ -346,6 +360,66 @@ class agent_memory {
         $this->dirty = true;
     }
 
+    // =========================================================================
+    // EXPLANATION TRACKING (for cognitive phase transitions)
+    // =========================================================================
+
+    /**
+     * Get the number of explanation attempts for current topic.
+     *
+     * @return int Explanation count.
+     */
+    public function get_explanation_count(): int {
+        return $this->explanationcount;
+    }
+
+    /**
+     * Increment explanation count.
+     *
+     * Called when an explanation action is executed.
+     *
+     * @return int New explanation count.
+     */
+    public function increment_explanation_count(): int {
+        $this->explanationcount++;
+        $this->dirty = true;
+        return $this->explanationcount;
+    }
+
+    /**
+     * Check if student has confirmed understanding.
+     *
+     * @return bool True if understanding was confirmed.
+     */
+    public function has_confirmed_understanding(): bool {
+        return $this->hasconfirmedunderstanding;
+    }
+
+    /**
+     * Set confirmed understanding status.
+     *
+     * @param bool $confirmed Whether understanding was confirmed.
+     * @return void
+     */
+    public function set_confirmed_understanding(bool $confirmed): void {
+        $this->hasconfirmedunderstanding = $confirmed;
+        $this->dirty = true;
+    }
+
+    /**
+     * Reset explanation tracking for a new topic.
+     *
+     * Should be called when the topic changes.
+     *
+     * @return void
+     */
+    public function reset_for_new_topic(): void {
+        $this->explanationcount = 0;
+        $this->hasconfirmedunderstanding = false;
+        $this->guidanceattempts = 0;
+        $this->dirty = true;
+    }
+
     /**
      * Get the current topic.
      *
@@ -362,14 +436,15 @@ class agent_memory {
      * @return void
      */
     public function set_current_topic(?string $topic): void {
-        // If topic changed, reset attempts and track in discussed topics.
+        // If topic changed, reset all tracking and record in discussed topics.
         if ($topic !== $this->currenttopic && $this->currenttopic !== null) {
             $discussedtopics = $this->get_data('discussed_topics', []);
             if (!in_array($this->currenttopic, $discussedtopics, true)) {
                 $discussedtopics[] = $this->currenttopic;
                 $this->set_data('discussed_topics', $discussedtopics);
             }
-            $this->reset_guidance_attempts();
+            // Reset all tracking for new topic.
+            $this->reset_for_new_topic();
         }
 
         $this->currenttopic = $topic;
@@ -560,6 +635,8 @@ class agent_memory {
             'state' => $this->currentstate,
             'current_topic' => $this->currenttopic,
             'guidance_attempts' => $this->guidanceattempts,
+            'explanation_count' => $this->explanationcount,
+            'has_confirmed_understanding' => $this->hasconfirmedunderstanding,
             'last_intent' => $this->lastintent,
             'last_action' => $this->lastaction,
             'message_count' => count($this->messages),

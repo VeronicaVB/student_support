@@ -19,16 +19,23 @@ namespace local_student_support\agent;
 defined('MOODLE_INTERNAL') || die();
 
 /**
- * Intent detector for the Student Support Agent.
+ * Intent detector - LEGACY WRAPPER.
  *
- * Analyzes user messages to determine their intent.
- * This is a rule-based intent detector that uses pattern matching
- * and keyword analysis. It does NOT use AI for intent detection
- * to maintain control over the agent's behavior.
+ * This class now delegates to signal_detector for pattern matching.
+ * It translates signals into legacy intent format for backward compatibility.
+ *
+ * NEW CODE SHOULD USE:
+ * - signal_detector: for detecting boolean signals
+ * - cognitive_state: for tracking student state
+ * - state_transition_engine: for computing state changes
+ * - action_policy: for selecting actions
+ *
+ * This class is maintained for backward compatibility only.
  *
  * @package   local_student_support
  * @copyright 2025, Veronica Bermegui
  * @license   http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
+ * @deprecated Use signal_detector and cognitive_state instead.
  */
 class intent_detector {
 
@@ -59,129 +66,79 @@ class intent_detector {
     /** @var string Intent: General conversation / unknown. */
     public const INTENT_GENERAL = 'general';
 
-    /** @var array Patterns for detecting "request answer" intent. */
-    private const REQUEST_ANSWER_PATTERNS = [
-        '/\b(give\s+me|tell\s+me|what\s+is)\s+(the\s+)?answer/i',
-        '/\b(just\s+)?(tell|give)\s+me\s+(the\s+)?(solution|answer|result)/i',
-        '/\bwhat\'?s?\s+the\s+(correct|right)\s+answer/i',
-        '/\bsolve\s+(this|it)\s+for\s+me/i',
-        '/\bdo\s+(this|it|my\s+homework)\s+for\s+me/i',
-        '/\bwrite\s+(this|it|the\s+essay|my\s+essay)\s+for\s+me/i',
-        '/\bcomplete\s+(this|it)\s+for\s+me/i',
-        '/\bjust\s+(give|show)\s+me\s+the\s+(code|solution|answer)/i',
-        '/\bfinish\s+(this|it)\s+for\s+me/i',
-    ];
+    /** @var signal_detector Signal detector instance. */
+    private signal_detector $signaldetector;
 
-    /** @var array Patterns for detecting "need help" intent. */
-    private const NEED_HELP_PATTERNS = [
-        '/\b(i\s+)?(don\'?t|do\s+not)\s+understand/i',
-        '/\b(i\'?m|i\s+am)\s+(confused|stuck|lost)/i',
-        '/\bcan\s+you\s+(help|explain|clarify)/i',
-        '/\bhelp\s+me\s+(understand|with|figure)/i',
-        '/\bi\s+need\s+help/i',
-        '/\bwhat\s+does\s+(this|that|it)\s+mean/i',
-        '/\bhow\s+do\s+(i|you|we)/i',
-        '/\bcan\s+you\s+show\s+me\s+how/i',
-        '/\bi\'?m\s+having\s+trouble/i',
-    ];
-
-    /** @var array Patterns for detecting "want example" intent. */
-    private const WANT_EXAMPLE_PATTERNS = [
-        '/\b(give|show)\s+(me\s+)?(an?\s+)?example/i',
-        '/\bfor\s+example/i',
-        '/\bcan\s+you\s+(give|show)\s+(me\s+)?(an?\s+)?example/i',
-        '/\blike\s+what/i',
-        '/\bsuch\s+as/i',
-        '/\bwhat\s+would\s+(this|that|it)\s+look\s+like/i',
-    ];
-
-    /** @var array Patterns for detecting "frustration" intent. */
-    private const FRUSTRATION_PATTERNS = [
-        '/\bthis\s+(is\s+)?(so\s+)?(frustrating|annoying|stupid|dumb)/i',
-        '/\bi\s+(give\s+up|quit|can\'?t\s+do\s+(this|it))/i',
-        '/\b(this|it)\s+makes\s+no\s+sense/i',
-        '/\bi\'?m\s+(so\s+)?(frustrated|annoyed|angry)/i',
-        '/\bwhy\s+(is\s+)?(this|it)\s+so\s+(hard|difficult|confusing)/i',
-        '/\bi\s+hate\s+(this|it)/i',
-        '/\bthis\s+is\s+impossible/i',
-    ];
-
-    /** @var array Patterns for detecting "clarification" intent. */
-    private const CLARIFICATION_PATTERNS = [
-        '/\bwhat\s+do\s+you\s+mean/i',
-        '/\bcan\s+you\s+(clarify|explain\s+that|be\s+more\s+specific)/i',
-        '/\bi\'?m\s+not\s+sure\s+(i\s+)?understand/i',
-        '/\bcould\s+you\s+(rephrase|say\s+that\s+again|explain\s+differently)/i',
-        '/\bin\s+other\s+words/i',
-        '/\bwhat\s+does\s+that\s+mean/i',
-    ];
-
-    /** @var array Patterns for detecting "confirm understanding" intent. */
-    private const CONFIRM_UNDERSTANDING_PATTERNS = [
-        '/\b(i\s+)(think\s+i\s+)?(understand|get\s+it|see)\s+(now)?/i',
-        '/\b(oh|ah),?\s+(i\s+)?(see|get\s+it|understand)/i',
-        '/\bthat\s+makes\s+sense/i',
-        '/\bso\s+(you\'?re\s+saying|it\'?s\s+like|basically)/i',
-        '/\bgot\s+it/i',
-        '/\bi\s+see\s+what\s+you\s+mean/i',
-    ];
-
-    /** @var array Patterns for detecting "end conversation" intent. */
-    private const END_CONVERSATION_PATTERNS = [
-        '/\b(thanks?|thank\s+you)(\s+for\s+(your\s+)?help)?[.!]?$/i',
-        '/\b(bye|goodbye|see\s+you|later)/i',
-        '/\bthat\'?s\s+all\s+(i\s+needed|for\s+now)/i',
-        '/\bi\'?m\s+(good|done|fine)\s+(now|for\s+now)?/i',
-        '/\bno\s+more\s+questions/i',
+    /** @var array Mapping from signals to legacy intents. */
+    private const SIGNAL_TO_INTENT = [
+        signal_detector::SIGNAL_ANSWER_REQUEST => self::INTENT_REQUEST_ANSWER,
+        signal_detector::SIGNAL_FRUSTRATION => self::INTENT_EXPRESS_FRUSTRATION,
+        signal_detector::SIGNAL_CLOSING => self::INTENT_END_CONVERSATION,
+        signal_detector::SIGNAL_CONFIRMS_UNDERSTANDING => self::INTENT_CONFIRM_UNDERSTANDING,
+        signal_detector::SIGNAL_WANTS_EXAMPLE => self::INTENT_WANT_EXAMPLE,
+        signal_detector::SIGNAL_NEEDS_CLARIFICATION => self::INTENT_ASK_CLARIFICATION,
+        signal_detector::SIGNAL_CONFUSION => self::INTENT_NEED_HELP,
+        signal_detector::SIGNAL_NEW_QUESTION => self::INTENT_ASK_QUESTION,
+        signal_detector::SIGNAL_UNCERTAINTY => self::INTENT_NEED_HELP,
+        signal_detector::SIGNAL_ATTEMPTING => self::INTENT_CONFIRM_UNDERSTANDING,
     ];
 
     /** @var array Keywords that suggest academic subject topics. */
     private const TOPIC_KEYWORDS = [
-        'math' => ['math', 'algebra', 'geometry', 'calculus', 'equation', 'formula', 'number', 'fraction'],
-        'science' => ['science', 'physics', 'chemistry', 'biology', 'experiment', 'hypothesis', 'molecule'],
-        'english' => ['english', 'essay', 'grammar', 'writing', 'reading', 'literature', 'poem', 'story'],
-        'history' => ['history', 'historical', 'war', 'civilization', 'century', 'revolution', 'ancient'],
-        'programming' => ['code', 'programming', 'function', 'variable', 'loop', 'algorithm', 'debug'],
+        'math' => [
+            'math', 'mathematics', 'algebra', 'geometry', 'calculus', 'equation', 'formula',
+            'number', 'fraction', 'multiplication', 'division', 'addition', 'subtraction',
+            'percentage', 'decimal', 'integer', 'ratio', 'proportion', 'exponent', 'square root',
+        ],
+        'science' => [
+            'science', 'physics', 'chemistry', 'biology', 'experiment', 'hypothesis', 'molecule',
+            'atom', 'cell', 'energy', 'force', 'gravity', 'photosynthesis', 'evolution',
+        ],
+        'english' => [
+            'english', 'essay', 'grammar', 'writing', 'reading', 'literature', 'poem', 'story',
+            'verb', 'noun', 'adjective', 'sentence', 'paragraph', 'spelling', 'vocabulary',
+        ],
+        'history' => [
+            'history', 'historical', 'war', 'civilization', 'century', 'revolution', 'ancient',
+            'empire', 'colonization', 'independence', 'treaty', 'democracy',
+        ],
+        'programming' => [
+            'code', 'programming', 'function', 'variable', 'loop', 'algorithm', 'debug',
+            'array', 'object', 'class', 'method', 'syntax', 'compiler', 'database',
+        ],
     ];
+
+    /**
+     * Constructor.
+     */
+    public function __construct() {
+        $this->signaldetector = new signal_detector();
+    }
 
     /**
      * Detect the intent of a user message.
      *
+     * This method now delegates to signal_detector and translates
+     * signals to legacy intent format.
+     *
      * @param string $message The user's message.
      * @param array $context Additional context.
-     * @return array Intent information with 'type', 'confidence', and 'topic'.
+     * @return array Intent information with 'type', 'confidence', 'topic', and 'signals'.
      */
     public function detect(string $message, array $context = []): array {
         $message = trim($message);
         $lowermessage = strtolower($message);
 
-        // Check for each intent type in priority order.
-        $intents = [
-            self::INTENT_REQUEST_ANSWER => $this->check_patterns($message, self::REQUEST_ANSWER_PATTERNS),
-            self::INTENT_EXPRESS_FRUSTRATION => $this->check_patterns($message, self::FRUSTRATION_PATTERNS),
-            self::INTENT_END_CONVERSATION => $this->check_patterns($message, self::END_CONVERSATION_PATTERNS),
-            self::INTENT_CONFIRM_UNDERSTANDING => $this->check_patterns($message, self::CONFIRM_UNDERSTANDING_PATTERNS),
-            self::INTENT_WANT_EXAMPLE => $this->check_patterns($message, self::WANT_EXAMPLE_PATTERNS),
-            self::INTENT_ASK_CLARIFICATION => $this->check_patterns($message, self::CLARIFICATION_PATTERNS),
-            self::INTENT_NEED_HELP => $this->check_patterns($message, self::NEED_HELP_PATTERNS),
-        ];
+        // Detect signals using the new signal_detector.
+        $signals = $this->signaldetector->detect($message, $context);
 
-        // Find the highest confidence intent.
-        $detectedintent = self::INTENT_GENERAL;
-        $confidence = 0.3; // Default low confidence for general.
+        // Get primary signal and translate to legacy intent.
+        $primarysignal = $this->signaldetector->get_primary_signal($signals);
+        $detectedintent = $this->translate_signal_to_intent($primarysignal, $message);
 
-        foreach ($intents as $intenttype => $intentconfidence) {
-            if ($intentconfidence > $confidence) {
-                $detectedintent = $intenttype;
-                $confidence = $intentconfidence;
-            }
-        }
-
-        // If message is a question but no specific intent detected.
-        if ($detectedintent === self::INTENT_GENERAL && $this->is_question($message)) {
-            $detectedintent = self::INTENT_ASK_QUESTION;
-            $confidence = 0.6;
-        }
+        // Calculate confidence based on active signals.
+        $activesignals = $this->signaldetector->get_active_signals($signals);
+        $confidence = $this->calculate_confidence($activesignals, $primarysignal);
 
         // Detect topic.
         $topic = $this->detect_topic($lowermessage, $context);
@@ -192,31 +149,55 @@ class intent_detector {
             'topic' => $topic,
             'message_length' => strlen($message),
             'is_question' => $this->is_question($message),
+            // New: include signals for new architecture.
+            'signals' => $signals,
+            'primary_signal' => $primarysignal,
+            'active_signals' => $activesignals,
         ];
     }
 
     /**
-     * Check a message against a set of patterns.
+     * Translate a signal to legacy intent format.
      *
-     * @param string $message The message to check.
-     * @param array $patterns Array of regex patterns.
-     * @return float Confidence score (0.0 to 1.0).
+     * @param string|null $primarysignal Primary signal.
+     * @param string $message Original message.
+     * @return string Legacy intent constant.
      */
-    private function check_patterns(string $message, array $patterns): float {
-        $matches = 0;
-
-        foreach ($patterns as $pattern) {
-            if (preg_match($pattern, $message)) {
-                $matches++;
-            }
+    private function translate_signal_to_intent(?string $primarysignal, string $message): string {
+        // If we have a primary signal, use the mapping.
+        if ($primarysignal !== null && isset(self::SIGNAL_TO_INTENT[$primarysignal])) {
+            return self::SIGNAL_TO_INTENT[$primarysignal];
         }
 
-        if ($matches === 0) {
-            return 0.0;
+        // If no specific signal but message is a question.
+        if ($this->is_question($message)) {
+            return self::INTENT_ASK_QUESTION;
         }
 
-        // More matches = higher confidence, but cap at 0.95.
-        return min(0.95, 0.5 + ($matches * 0.15));
+        return self::INTENT_GENERAL;
+    }
+
+    /**
+     * Calculate confidence based on active signals.
+     *
+     * @param array $activesignals List of active signal names.
+     * @param string|null $primarysignal Primary signal.
+     * @return float Confidence score.
+     */
+    private function calculate_confidence(array $activesignals, ?string $primarysignal): float {
+        if (empty($activesignals)) {
+            return 0.3; // Low confidence for no signals.
+        }
+
+        $signalcount = count($activesignals);
+
+        // Base confidence for having a primary signal.
+        $baseconfidence = ($primarysignal !== null) ? 0.6 : 0.4;
+
+        // Additional confidence for multiple confirming signals.
+        $additionalconfidence = min(0.35, $signalcount * 0.1);
+
+        return min(0.95, $baseconfidence + $additionalconfidence);
     }
 
     /**
@@ -249,25 +230,149 @@ class intent_detector {
     /**
      * Detect the topic of the message.
      *
+     * PRIORITY ORDER:
+     * 1. If message contains a REAL subject topic keyword → use that topic
+     * 2. If message contains meta-words (explanation, answer, etc.) → keep current topic
+     * 3. If no topic detected → keep current topic
+     *
      * @param string $lowermessage Lowercase message.
      * @param array $context Additional context.
      * @return string|null Detected topic or null.
      */
     private function detect_topic(string $lowermessage, array $context = []): ?string {
-        // First, check if there's a current topic in context.
+        // Get current topic from context/memory.
         $currenttopic = $context['memory_summary']['current_topic'] ?? null;
 
-        // Check for topic keywords in message.
-        foreach (self::TOPIC_KEYWORDS as $topic => $keywords) {
+        // PRIORITY 1: Check for REAL subject topic keywords in message.
+        // These are actual academic subjects, not meta-words about learning.
+        foreach (self::TOPIC_KEYWORDS as $category => $keywords) {
             foreach ($keywords as $keyword) {
                 if (strpos($lowermessage, $keyword) !== false) {
-                    return $topic;
+                    // Found a real topic keyword.
+                    // If it's a different category than current topic, switch to it.
+                    if ($currenttopic === null || $category !== $this->get_topic_category($currenttopic)) {
+                        return $category;
+                    }
+                    // Same category - keep the more specific current topic if it exists.
+                    return $currenttopic;
                 }
             }
         }
 
-        // If no new topic detected, keep current topic.
+        // PRIORITY 2: Try to extract specific topic from message.
+        // But only accept it if it's NOT a meta-word.
+        $specifictopic = $this->extract_specific_topic($lowermessage);
+        if ($specifictopic !== null) {
+            // extract_specific_topic already filters meta-words, so this is a real topic.
+            return $specifictopic;
+        }
+
+        // PRIORITY 3: No new topic found - keep current topic.
+        // This handles messages like "I don't understand the explanation" where
+        // "explanation" is a meta-word and should NOT override the current topic.
         return $currenttopic;
+    }
+
+    /**
+     * Extract a specific topic from the message (e.g., "multiplication", "photosynthesis").
+     *
+     * @param string $message The message to analyze.
+     * @return string|null Specific topic or null.
+     */
+    private function extract_specific_topic(string $message): ?string {
+        // Patterns to extract specific topics.
+        // NOTE: These patterns are carefully crafted to avoid capturing trailing articles/words.
+        $patterns = [
+            // "about X", "regarding X", "on X" - capture single word only.
+            '/\b(?:about|regarding|on|with)\s+([a-z]+)\b/i',
+            // "understand X", "learn X", "help with X" - capture single word only.
+            '/\b(?:understand|learn|help\s+with|confused\s+about|struggling\s+with)\s+(?:the\s+)?([a-z]+)\b/i',
+            // "X is confusing", "X doesn't make sense" - capture single word only.
+            '/^([a-z]+)\s+(?:is|are|doesn\'t|does\s+not|isn\'t)/i',
+        ];
+
+        foreach ($patterns as $pattern) {
+            if (preg_match($pattern, $message, $matches)) {
+                $extracted = trim($matches[1]);
+                // Filter out common non-topics AND meta-words (words about learning, not subjects).
+                // Also filter if the extracted word is a non-topic.
+                if (!$this->is_non_topic_word($extracted) && strlen($extracted) > 2) {
+                    return $extracted;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Check if a word is a non-topic (pronoun, meta-word about learning, etc.).
+     *
+     * Meta-words are words that refer to the PROCESS of learning (explanation, answer,
+     * question) rather than SUBJECT MATTER (fractions, photosynthesis, algebra).
+     * These should NOT override an existing topic.
+     *
+     * @param string $word The word to check.
+     * @return bool True if this is a non-topic word.
+     */
+    private function is_non_topic_word(string $word): bool {
+        $lowerword = strtolower($word);
+
+        // Pronouns and generic references.
+        $pronouns = ['it', 'this', 'that', 'everything', 'anything', 'something', 'nothing', 'me', 'you', 'i'];
+
+        // Meta-words about learning process (NOT subject matter).
+        $metawords = [
+            'explanation', 'explanations', 'explain',
+            'answer', 'answers',
+            'question', 'questions',
+            'example', 'examples',
+            'problem', 'problems',
+            'solution', 'solutions',
+            'concept', 'concepts',
+            'topic', 'topics',
+            'lesson', 'lessons',
+            'teacher', 'tutor',
+            'homework', 'assignment',
+            'test', 'exam', 'quiz',
+            'help', 'hint', 'hints',
+            'idea', 'ideas',
+            'thing', 'things', 'stuff',
+            'part', 'parts',
+            'step', 'steps',
+            'way', 'method',
+        ];
+
+        return in_array($lowerword, $pronouns) || in_array($lowerword, $metawords);
+    }
+
+    /**
+     * Get the general category for a topic.
+     *
+     * @param string|null $topic The specific topic.
+     * @return string|null The category or null.
+     */
+    private function get_topic_category(?string $topic): ?string {
+        if ($topic === null) {
+            return null;
+        }
+
+        $lowertopic = strtolower($topic);
+
+        foreach (self::TOPIC_KEYWORDS as $category => $keywords) {
+            // Check if topic IS a category.
+            if ($lowertopic === $category) {
+                return $category;
+            }
+            // Check if topic contains a keyword.
+            foreach ($keywords as $keyword) {
+                if (strpos($lowertopic, $keyword) !== false) {
+                    return $category;
+                }
+            }
+        }
+
+        return null;
     }
 
     /**
@@ -313,5 +418,16 @@ class intent_detector {
             self::INTENT_EXPRESS_FRUSTRATION,
             self::INTENT_WANT_EXAMPLE,
         ], true);
+    }
+
+    /**
+     * Get the underlying signal detector.
+     *
+     * Use this for direct access to signals in new code.
+     *
+     * @return signal_detector The signal detector instance.
+     */
+    public function get_signal_detector(): signal_detector {
+        return $this->signaldetector;
     }
 }

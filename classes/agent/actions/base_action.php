@@ -25,13 +25,19 @@ defined('MOODLE_INTERNAL') || die();
 /**
  * Base class for agent actions.
  *
- * Provides common functionality for all actions including:
- * - Prompt building
- * - LLM execution via OpenAI client
- * - Response handling
+ * IMPORTANT DESIGN PRINCIPLE:
+ * Pedagogical actions are NOT agents. They are CONTROLLED RENDERERS.
  *
- * Subclasses must implement the abstract methods to define
- * action-specific behavior and prompts.
+ * During action execution:
+ * - The LLM must NOT reason freely
+ * - The LLM must NOT decide pedagogical strategy
+ * - The LLM must ONLY generate output under strict formatting constraints
+ *
+ * Context Isolation Rules:
+ * - DO NOT pass the global system prompt
+ * - DO NOT pass the full conversation history
+ * - DO NOT pass agent rules, goals, or tool lists
+ * - ONLY pass minimal, action-specific instructions
  *
  * @package   local_student_support
  * @copyright 2025, Veronica Bermegui
@@ -42,10 +48,10 @@ abstract class base_action implements action_interface {
     /**
      * Execute the action using the LLM.
      *
-     * This method:
-     * 1. Builds the action-specific prompt
-     * 2. Sends it to the OpenAI API
-     * 3. Returns the formatted response
+     * This method uses ISOLATED CONTEXT:
+     * - Minimal system instruction (action-specific only)
+     * - Single user instruction describing what to generate
+     * - No agent context, no conversation history, no tools
      *
      * @param array $context Gathered context from GAME loop.
      * @param array $analysis Analysis results from GAME loop.
@@ -59,13 +65,8 @@ abstract class base_action implements action_interface {
         agent_config $config,
         agent_memory $memory
     ): array {
-        // Build the prompt for this action.
-        $prompt = $this->build_prompt($context, $analysis, $config, $memory);
-
-        // Create OpenAI client.
         $client = new openai_client();
 
-        // Check if client is configured.
         if (!$client->is_configured()) {
             return [
                 'success' => false,
@@ -77,31 +78,55 @@ abstract class base_action implements action_interface {
             ];
         }
 
-        // Build messages for the API.
-        // For action execution, we use the action prompt as a user message
-        // with the system prompt providing overall context.
+        // CONTEXT ISOLATION: Build minimal, action-specific prompt.
+        $systemprompt = $this->get_isolated_system_prompt($config);
+        $userprompt = $this->build_isolated_user_prompt($context, $analysis, $config, $memory);
+
         $messages = [
             [
                 'role' => 'user',
-                'content' => $prompt,
+                'content' => $userprompt,
             ],
         ];
 
-        // Build system prompt.
-        $systemprompt = $this->build_action_system_prompt($config, $analysis);
-
-        // Call the LLM (no tools - we want a direct text response).
+        // Call the LLM with NO tools - this is a controlled text generator.
         $response = $client->ask($systemprompt, $messages, []);
 
-        // Handle the response.
         return $this->handle_llm_response($response, $config);
+    }
+
+    /**
+     * Execute the action with policy modifiers.
+     *
+     * Called by the action_policy when state-driven routing is used.
+     * Modifiers adjust behavior without full arguments.
+     *
+     * @param array $modifiers Modifiers from action_policy.
+     * @param array $context Gathered context from GAME loop.
+     * @param array $analysis Analysis results from GAME loop.
+     * @param agent_config $config Agent configuration.
+     * @param agent_memory $memory Agent memory.
+     * @return array Response with 'success', 'message', and 'metadata'.
+     */
+    public function execute_with_modifiers(
+        array $modifiers,
+        array $context,
+        array $analysis,
+        agent_config $config,
+        agent_memory $memory
+    ): array {
+        // Store modifiers for use in prompt building.
+        $context['modifiers'] = $modifiers;
+
+        // Delegate to standard execute method.
+        return $this->execute($context, $analysis, $config, $memory);
     }
 
     /**
      * Execute the action with tool call arguments.
      *
-     * This variant is called when the LLM has already selected this action
-     * via function calling and provided arguments.
+     * Called when the LLM has selected this action via function calling.
+     * Uses the same ISOLATED CONTEXT principle.
      *
      * @param array $arguments Arguments from the tool call.
      * @param array $context Gathered context from GAME loop.
@@ -117,10 +142,6 @@ abstract class base_action implements action_interface {
         agent_config $config,
         agent_memory $memory
     ): array {
-        // Build prompt incorporating the tool arguments.
-        $prompt = $this->build_prompt_with_arguments($arguments, $context, $analysis, $config, $memory);
-
-        // Create OpenAI client.
         $client = new openai_client();
 
         if (!$client->is_configured()) {
@@ -134,17 +155,217 @@ abstract class base_action implements action_interface {
             ];
         }
 
+        // CONTEXT ISOLATION: Use arguments to build focused prompt.
+        $systemprompt = $this->get_isolated_system_prompt($config);
+        $userprompt = $this->build_isolated_user_prompt_with_arguments($arguments, $context, $config);
+
         $messages = [
             [
                 'role' => 'user',
-                'content' => $prompt,
+                'content' => $userprompt,
             ],
         ];
 
-        $systemprompt = $this->build_action_system_prompt($config, $analysis);
         $response = $client->ask($systemprompt, $messages, []);
 
         return $this->handle_llm_response($response, $config);
+    }
+
+    /**
+     * Get the ISOLATED system prompt for action execution.
+     *
+     * This is MINIMAL and action-specific. It does NOT include:
+     * - Global agent system prompt
+     * - Agent goals or constraints
+     * - Tool definitions
+     * - Conversation history
+     *
+     * NOTE: Questions are now CONDITIONAL based on cognitive phase.
+     * The base prompt does NOT mandate questions - each action decides
+     * based on modifiers passed from action_policy.
+     *
+     * @param agent_config $config Agent configuration.
+     * @return string Minimal system prompt.
+     */
+    protected function get_isolated_system_prompt(agent_config $config): string {
+        $agentcontext = $config->build_agent_context();
+        $gradelevel = $agentcontext['student']['grade_level'] ?? 'secondary';
+        $language = $agentcontext['behaviour']['response_language'] ?? 'English';
+
+        // Minimal system instruction - formatting constraints only.
+        // NOTE: No mandatory question rule - actions decide based on phase.
+        return <<<PROMPT
+You are generating a controlled educational response.
+
+ROLE: Educational text generator (NOT a decision-making agent).
+
+OUTPUT CONSTRAINTS (MANDATORY):
+- Write for a {$gradelevel} student
+- Respond in {$language}
+- Maximum 3 short paragraphs
+- No numbered lists with more than 3 items
+- No bullet points
+- Explain ONE concept only
+- Do NOT provide complete answers or solutions
+- Do NOT cover the full topic
+
+STYLE:
+- Professional but warm
+- Simple, clear language
+- Short sentences
+
+You are a text renderer, not a teacher making decisions.
+PROMPT;
+    }
+
+    /**
+     * Build the ISOLATED user prompt for action execution.
+     *
+     * Subclasses MUST override this to provide action-specific prompts.
+     * The prompt should be minimal and focused.
+     *
+     * IMPORTANT: Use get_conversation_topic() to get the topic, NOT regex extraction.
+     * The topic should come from memory to maintain conversation continuity.
+     *
+     * @param array $context Gathered context (use sparingly).
+     * @param array $analysis Analysis results (use sparingly).
+     * @param agent_config $config Agent configuration.
+     * @param agent_memory $memory Agent memory.
+     * @return string Focused user prompt.
+     */
+    abstract protected function build_isolated_user_prompt(
+        array $context,
+        array $analysis,
+        agent_config $config,
+        agent_memory $memory
+    ): string;
+
+    /**
+     * Build the ISOLATED user prompt with tool arguments.
+     *
+     * Uses arguments from function calling to create a focused prompt.
+     *
+     * @param array $arguments Tool call arguments.
+     * @param array $context Gathered context (use sparingly).
+     * @param agent_config $config Agent configuration.
+     * @return string Focused user prompt.
+     */
+    protected function build_isolated_user_prompt_with_arguments(
+        array $arguments,
+        array $context,
+        agent_config $config
+    ): string {
+        // Extract key information from arguments.
+        $concept = $arguments['concept'] ?? $arguments['topic'] ?? '';
+        $studentmessage = $context['user_message'] ?? '';
+
+        // If no concept provided, extract from student message.
+        if (empty($concept)) {
+            $concept = $this->extract_topic_from_message($studentmessage);
+        }
+
+        return $this->build_focused_instruction($concept, $studentmessage);
+    }
+
+    /**
+     * Build a focused instruction for this action.
+     *
+     * Subclasses should override this with action-specific instructions.
+     *
+     * @param string $concept The concept/topic to address.
+     * @param string $studentmessage The student's original message.
+     * @return string Focused instruction.
+     */
+    abstract protected function build_focused_instruction(string $concept, string $studentmessage): string;
+
+    /**
+     * Get the conversation topic from memory or context.
+     *
+     * PRIORITY ORDER:
+     * 1. Current topic from memory (maintains conversation continuity)
+     * 2. Topic from intent detection
+     * 3. Fallback extraction from message (only for new questions)
+     *
+     * @param array $context Gathered context.
+     * @param agent_memory $memory Agent memory.
+     * @return string The topic to use.
+     */
+    protected function get_conversation_topic(array $context, agent_memory $memory): string {
+        // Priority 1: Use topic from memory (conversation continuity).
+        $memorytopic = $memory->get_current_topic();
+        if (!empty($memorytopic)) {
+            return $memorytopic;
+        }
+
+        // Priority 2: Use topic from intent detection (already analyzed).
+        $intenttopic = $context['memory_summary']['current_topic'] ?? null;
+        if (!empty($intenttopic)) {
+            return $intenttopic;
+        }
+
+        // Priority 3: Fallback - extract from current message (new conversation only).
+        $studentmessage = $context['user_message'] ?? '';
+        return $this->extract_topic_from_message($studentmessage);
+    }
+
+    /**
+     * Extract the topic from a student message.
+     *
+     * NOTE: This should only be used as a FALLBACK for new conversations.
+     * For ongoing conversations, use get_conversation_topic() instead.
+     *
+     * @param string $message Student message.
+     * @return string Extracted topic.
+     */
+    protected function extract_topic_from_message(string $message): string {
+        // Remove common question prefixes.
+        $cleaned = preg_replace('/^(what is|what are|how do|how does|can you explain|explain|tell me about|help me understand)\s+/i', '', $message);
+        $cleaned = preg_replace('/\?.*$/', '', $cleaned);
+        $cleaned = trim($cleaned);
+
+        // Filter out meta-words (words about learning process, not subject matter).
+        if ($this->is_meta_word($cleaned)) {
+            return 'the topic';
+        }
+
+        // Limit length.
+        if (mb_strlen($cleaned) > 100) {
+            $cleaned = mb_substr($cleaned, 0, 100);
+        }
+
+        return $cleaned ?: 'the topic';
+    }
+
+    /**
+     * Check if a word is a meta-word (about learning process, not subject matter).
+     *
+     * @param string $word The word to check.
+     * @return bool True if this is a meta-word.
+     */
+    protected function is_meta_word(string $word): bool {
+        $lowerword = strtolower(trim($word));
+
+        // Extract first word if phrase.
+        $firstword = explode(' ', $lowerword)[0];
+
+        $metawords = [
+            'it', 'this', 'that', 'everything', 'anything', 'something', 'nothing',
+            'explanation', 'explanations', 'explain',
+            'answer', 'answers',
+            'question', 'questions',
+            'example', 'examples',
+            'problem', 'problems',
+            'solution', 'solutions',
+            'concept', 'concepts',
+            'topic', 'topics',
+            'lesson', 'lessons',
+            'teacher', 'tutor',
+            'homework', 'assignment',
+            'help', 'hint', 'hints',
+            'thing', 'things', 'stuff',
+        ];
+
+        return in_array($firstword, $metawords) || in_array($lowerword, $metawords);
     }
 
     /**
@@ -180,7 +401,6 @@ abstract class base_action implements action_interface {
             ];
         }
 
-        // Unexpected response type.
         return [
             'success' => false,
             'message' => get_string('error:apierror', 'local_student_support'),
@@ -193,112 +413,41 @@ abstract class base_action implements action_interface {
     }
 
     /**
-     * Build the system prompt for action execution.
+     * Get the last assistant message from context.
      *
-     * @param agent_config $config Agent configuration.
-     * @param array $analysis Analysis results.
-     * @return string System prompt.
+     * Used to provide continuity context without full history.
+     *
+     * @param array $context Gathered context.
+     * @return string|null Last assistant message or null.
      */
-    protected function build_action_system_prompt(agent_config $config, array $analysis): string {
-        $agentcontext = $config->build_agent_context();
-
-        $prompt = <<<PROMPT
-You are a Student Support Agent executing a specific pedagogical action.
-
-## Role and Context
-You are operating in a formal educational environment.
-Your role is to support student learning, not to complete tasks or provide final answers.
-You assist students in understanding concepts, instructions, and expectations.
-
-## Current Action: {$this->get_name()}
-
-## Strict Prohibitions (NEVER violate these)
-- NEVER provide final answers or complete solutions
-- NEVER write essays, code, or responses that can be submitted as student work
-- NEVER solve evaluable exercises
-- NEVER evaluate, grade, or judge academic performance
-- NEVER introduce content outside the student's educational level
-- NEVER adopt a casual or peer-like persona
-
-## Current Context
-- Curriculum: {$agentcontext['curriculum']['name']} ({$agentcontext['curriculum']['year']})
-- Student Grade Level: {$agentcontext['student']['grade_level']}
-- Subject Area: {$agentcontext['course']['subject_area']}
-- Response Language: {$agentcontext['behaviour']['response_language']}
-- Pedagogical Approach: {$agentcontext['behaviour']['pedagogical_approach']}
-
-## Response Guidelines
-- Be professional, respectful, and encouraging
-- Structure responses in clear, digestible steps
-- Adapt language complexity to the student's grade level
-- End with a way to verify understanding or invite further questions
-- Keep responses focused and concise
-PROMPT;
-
-        return $prompt;
+    protected function get_last_assistant_message(array $context): ?string {
+        $history = $context['conversation_history'] ?? [];
+        for ($i = count($history) - 1; $i >= 0; $i--) {
+            if (($history[$i]['role'] ?? '') === 'assistant') {
+                return $history[$i]['content'] ?? null;
+            }
+        }
+        return null;
     }
 
     /**
-     * Build prompt incorporating tool arguments.
+     * Build the prompt for this action.
      *
-     * Subclasses can override this to customize how arguments are used.
+     * Required by action_interface. Delegates to build_isolated_user_prompt
+     * to maintain context isolation principles.
      *
-     * @param array $arguments Tool call arguments.
      * @param array $context Gathered context.
      * @param array $analysis Analysis results.
      * @param agent_config $config Agent configuration.
      * @param agent_memory $memory Agent memory.
-     * @return string The prompt.
+     * @return string The prompt to send to the AI.
      */
-    protected function build_prompt_with_arguments(
-        array $arguments,
+    public function build_prompt(
         array $context,
         array $analysis,
         agent_config $config,
         agent_memory $memory
     ): string {
-        // Default implementation: include arguments in the base prompt.
-        $baseprompt = $this->build_prompt($context, $analysis, $config, $memory);
-
-        if (empty($arguments)) {
-            return $baseprompt;
-        }
-
-        $argstext = "\n\n## Action Parameters\n";
-        foreach ($arguments as $key => $value) {
-            $argstext .= "- {$key}: {$value}\n";
-        }
-
-        return $baseprompt . $argstext;
+        return $this->build_isolated_user_prompt($context, $analysis, $config, $memory);
     }
-
-    /**
-     * Format conversation history for the prompt.
-     *
-     * @param array $messages Conversation messages.
-     * @return string Formatted history.
-     */
-    protected function format_conversation_history(array $messages): string {
-        if (empty($messages)) {
-            return "No previous messages.";
-        }
-
-        $formatted = "";
-        foreach ($messages as $msg) {
-            $role = ucfirst($msg['role']);
-            $formatted .= "{$role}: {$msg['content']}\n\n";
-        }
-
-        return trim($formatted);
-    }
-
-    /**
-     * Get the action-specific instruction.
-     *
-     * Subclasses must implement this to provide specific instructions
-     * for the LLM when executing this action.
-     *
-     * @return string Action-specific instruction.
-     */
-    abstract protected function get_action_instruction(): string;
 }

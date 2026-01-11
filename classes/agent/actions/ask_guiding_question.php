@@ -18,15 +18,20 @@ namespace local_student_support\agent\actions;
 
 use local_student_support\agent\agent_config;
 use local_student_support\agent\agent_memory;
-use local_student_support\agent\prompts\system_prompt;
 
 defined('MOODLE_INTERNAL') || die();
 
 /**
- * Ask guiding question action.
+ * Ask guiding question action - CONTROLLED RENDERER.
  *
- * Uses Socratic questioning to guide students toward understanding.
- * Helps students discover answers through their own reasoning.
+ * Generates exactly ONE Socratic question to guide student thinking.
+ * This is NOT an agent - it does not reason or decide strategy.
+ *
+ * Output constraints:
+ * - Maximum 2 short sentences of context
+ * - Exactly ONE guiding question
+ * - No explanations
+ * - No answers disguised as hints
  *
  * @package   local_student_support
  * @copyright 2025, Veronica Bermegui
@@ -49,7 +54,7 @@ class ask_guiding_question extends base_action {
      * @return string Human-readable description.
      */
     public function get_description(): string {
-        return 'Ask a guiding question to help the student think through the problem';
+        return 'Ask exactly ONE guiding question';
     }
 
     /**
@@ -62,111 +67,169 @@ class ask_guiding_question extends base_action {
     }
 
     /**
-     * Get the action-specific instruction.
+     * Build the ISOLATED user prompt for this action.
      *
-     * @return string Action-specific instruction.
-     */
-    protected function get_action_instruction(): string {
-        return <<<INSTRUCTION
-Your task is to ASK A GUIDING QUESTION that helps the student think.
-
-Guidelines for guiding questions:
-1. Ask ONE focused question at a time
-2. The question should lead toward understanding, not give away answers
-3. Build on what the student already knows
-4. Make the question specific to their situation
-5. Encourage them to think about the "why" or "how"
-6. Use questions that can't be answered with just yes/no
-
-Types of effective guiding questions:
-- "What do you think would happen if...?"
-- "Can you explain what [concept] means in your own words?"
-- "What's the first step you would take to...?"
-- "How does this relate to [something they know]?"
-- "What information do you already have about this?"
-
-DO NOT:
-- Ask leading questions that give away the answer
-- Ask multiple questions at once
-- Ask rhetorical questions
-- Provide the answer immediately after asking
-
-Wait for their response before providing more guidance.
-INSTRUCTION;
-    }
-
-    /**
-     * Build the prompt for this action.
+     * CONTEXT ISOLATION: Only includes:
+     * - The topic (from memory for continuity)
+     * - The student's current message
+     * - Recent conversation context
+     * - Strict output constraints
      *
      * @param array $context Gathered context.
      * @param array $analysis Analysis results.
      * @param agent_config $config Agent configuration.
      * @param agent_memory $memory Agent memory.
-     * @return string The prompt to send to the AI.
+     * @return string Focused user prompt.
      */
-    public function build_prompt(
+    protected function build_isolated_user_prompt(
         array $context,
         array $analysis,
         agent_config $config,
         agent_memory $memory
     ): string {
-        // $systemprompt = $this->build_system_prompt($config);
-        $systemprompt = new system_prompt();
-        $systemprompt = $systemprompt->build($config, $memory, $analysis);
-        $actioninstruction = $this->get_action_instruction();
-        $history = $this->format_conversation_history($context['conversation_history']);
-        $usermessage = $context['user_message'];
-        $topic = $memory->get_current_topic() ?? 'the topic at hand';
-        $attempts = $memory->get_guidance_attempts();
-        $maxattempts = $config->get_max_attempts();
+        $studentmessage = $context['user_message'] ?? '';
 
-        // Check if we should escalate.
-        $escalationnotice = '';
-        if ($analysis['should_escalate'] ?? false) {
-            $escalationnotice = <<<NOTICE
+        // IMPORTANT: Use get_conversation_topic() to maintain conversation continuity.
+        $topic = $this->get_conversation_topic($context, $memory);
 
-## IMPORTANT: ESCALATION NEEDED
-The student has received {$attempts} guidance attempts and may benefit from
-speaking with their teacher. Include a gentle suggestion that they might
-want to discuss this with their teacher for additional help.
-NOTICE;
+        // Get recent conversation context.
+        $recentcontext = $this->get_recent_conversation_context($memory, 4);
+
+        // Check modifiers from action policy.
+        $modifiers = $context['modifiers'] ?? [];
+
+        // Check if escalation is needed.
+        $escalationhint = '';
+        if ($memory->get_guidance_attempts() >= $config->get_max_attempts()) {
+            $escalationhint = "\nNOTE: After your question, briefly suggest asking their teacher if they remain stuck.";
         }
 
-        // Check if this is responding to a request for direct answers.
-        $redirectnotice = '';
-        if (($analysis['intent']['type'] ?? '') === 'request_answer') {
-            $redirectnotice = <<<NOTICE
+        return $this->build_focused_instruction_with_context(
+            $topic,
+            $studentmessage,
+            $recentcontext,
+            $modifiers
+        ) . $escalationhint;
+    }
 
-## IMPORTANT: REDIRECT NEEDED
-The student is asking for a direct answer. Instead of providing it:
-1. Acknowledge their desire to know the answer
-2. Explain that discovering it themselves will help them learn better
-3. Ask a guiding question that helps them work toward the answer
-NOTICE;
+    /**
+     * Get recent conversation context for continuity.
+     *
+     * @param agent_memory $memory Agent memory.
+     * @param int $maxmessages Maximum messages to include.
+     * @return string Formatted recent context.
+     */
+    private function get_recent_conversation_context(agent_memory $memory, int $maxmessages = 4): string {
+        $messages = $memory->get_messages();
+
+        if (empty($messages)) {
+            return '';
         }
 
-        $prompt = <<<PROMPT
-{$systemprompt}
+        // Get last N messages (excluding the current one).
+        $recentmessages = array_slice($messages, -($maxmessages + 1), -1);
 
-## Current Action: ASK GUIDING QUESTION
-{$actioninstruction}
-{$escalationnotice}
-{$redirectnotice}
+        if (empty($recentmessages)) {
+            return '';
+        }
 
-## Context
-Topic: {$topic}
-Guidance attempt: {$attempts} of {$maxattempts}
+        $contextlines = [];
+        foreach ($recentmessages as $msg) {
+            $role = ($msg['role'] === 'user') ? 'Student' : 'Tutor';
+            $content = trim($msg['content']);
+            if (mb_strlen($content) > 200) {
+                $content = mb_substr($content, 0, 200) . '...';
+            }
+            $contextlines[] = "{$role}: {$content}";
+        }
 
-## Conversation History
-{$history}
+        return implode("\n", $contextlines);
+    }
 
-## Student's Current Message
-{$usermessage}
+    /**
+     * Build focused instruction with conversation context.
+     *
+     * @param string $concept The concept being discussed.
+     * @param string $studentmessage The student's current message.
+     * @param string $recentcontext Recent conversation context.
+     * @param array $modifiers Action modifiers from policy.
+     * @return string Focused instruction.
+     */
+    private function build_focused_instruction_with_context(
+        string $concept,
+        string $studentmessage,
+        string $recentcontext,
+        array $modifiers = []
+    ): string {
+        // Build minimal context - only last 2 messages.
+        $contextblock = '';
+        if (!empty($recentcontext)) {
+            $lines = explode("\n", $recentcontext);
+            $lastlines = array_slice($lines, -2);
+            $contextblock = "Context: " . implode(" | ", $lastlines);
+        }
 
-## Your Response
-Ask ONE thoughtful guiding question that helps the student think through this:
-PROMPT;
+        // Determine question style.
+        $style = 'open-ended';
+        if (!empty($modifiers['micro']) || !empty($modifiers['closed_question'])) {
+            $style = 'yes/no';
+        }
 
-        return $prompt;
+        return <<<INSTRUCTION
+Topic: {$concept}
+Student said: "{$studentmessage}"
+{$contextblock}
+
+TASK: Ask ONE {$style} question about {$concept}.
+
+RULES:
+- Maximum 2 sentences total
+- First sentence: brief acknowledgment (optional, max 10 words)
+- Second sentence: ONE question about {$concept}
+- The question must help the student think about {$concept}
+- Do NOT explain anything
+- Do NOT change topics
+
+OUTPUT FORMAT EXAMPLE:
+"I see you're working on [topic]. What do you think is the first step to [specific aspect]?"
+
+Write your response now (max 2 sentences):
+INSTRUCTION;
+    }
+
+    /**
+     * Build focused instruction for asking a guiding question.
+     *
+     * Legacy method - used when no context is available.
+     *
+     * @param string $concept The concept/topic.
+     * @param string $studentmessage The student's original message.
+     * @return string Focused instruction.
+     */
+    protected function build_focused_instruction(string $concept, string $studentmessage): string {
+        return <<<INSTRUCTION
+TASK: Generate ONE Socratic guiding question about "{$concept}"
+
+STUDENT ASKED: "{$studentmessage}"
+
+STRICT OUTPUT FORMAT:
+1. Optional: ONE short sentence acknowledging their question (max 15 words)
+2. EXACTLY ONE open-ended question that guides their thinking
+
+FORBIDDEN:
+- Do NOT ask multiple questions
+- Do NOT explain concepts
+- Do NOT provide hints that reveal the answer
+- Do NOT ask yes/no questions
+- Do NOT write more than 2 sentences total
+
+Good question patterns:
+- "What do you think happens when...?"
+- "How would you describe...in your own words?"
+- "What's the relationship between X and Y?"
+- "Why do you think that...?"
+
+Generate ONLY the brief acknowledgment (optional) and ONE question. Stop immediately after.
+INSTRUCTION;
     }
 }

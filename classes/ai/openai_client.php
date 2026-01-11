@@ -137,8 +137,9 @@ class openai_client {
         // Add tools if provided.
         if (!empty($tools)) {
             $requestbody['tools'] = $tools;
-            $requestbody['tool_choice'] = 'auto';
+            $requestbody['tool_choice'] = 'required';
         }
+
 
         // Make the API request.
         return $this->make_request($requestbody);
@@ -151,65 +152,85 @@ class openai_client {
      * @return array Parsed response.
      */
     private function make_request(array $body): array {
-        $curl = new \curl();
-        $curl->setopt([
-            'CURLOPT_TIMEOUT' => $this->timeout,
-            'CURLOPT_CONNECTTIMEOUT' => 10,
-        ]);
+    $headers = [
+        'Authorization: Bearer ' . $this->apikey,
+        'Content-Type: application/json'
+    ];
 
-        $headers = [
-            'Content-Type: application/json',
-            'Authorization: Bearer ' . $this->apikey,
-        ];
+    $ch = curl_init();
 
-        $starttime = microtime(true);
+    $starttime = microtime(true);
 
-        $response = $curl->post(
-            $this->endpoint,
-            json_encode($body),
-            ['CURLOPT_HTTPHEADER' => $headers]
+    curl_setopt_array($ch, [
+        CURLOPT_URL => $this->endpoint,
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_POST => true,
+        CURLOPT_POSTFIELDS => json_encode($body),
+        CURLOPT_HTTPHEADER => $headers,
+        CURLOPT_TIMEOUT => $this->timeout,
+        CURLOPT_CONNECTTIMEOUT => 10,
+        CURLOPT_SSL_VERIFYPEER => true,
+
+        // IMPORTANT: avoid proxy issues with Azure VNet
+        CURLOPT_PROXY => '',
+        CURLOPT_NOPROXY => '*',
+    ]);
+
+    $response = curl_exec($ch);
+    $httpcode = curl_getinfo($ch, CURLINFO_HTTP_CODE) ?: 0;
+    $duration = round((microtime(true) - $starttime) * 1000);
+
+    if ($response === false) {
+        $error = curl_error($ch);
+        curl_close($ch);
+
+        return $this->error_response(
+            'Connection error: ' . $error,
+            ['http_code' => $httpcode, 'duration_ms' => $duration]
         );
-
-        $duration = round((microtime(true) - $starttime) * 1000);
-        $httpcode = $curl->get_info()['http_code'] ?? 0;
-
-        // Check for curl errors.
-        if ($curl->get_errno()) {
-            return $this->error_response(
-                'Connection error: ' . $curl->error,
-                ['http_code' => $httpcode, 'duration_ms' => $duration]
-            );
-        }
-
-        // Parse the response.
-        $data = json_decode($response, true);
-
-        if (json_last_error() !== JSON_ERROR_NONE) {
-            return $this->error_response(
-                'Invalid JSON response from API',
-                ['http_code' => $httpcode, 'duration_ms' => $duration, 'raw' => substr($response, 0, 500)]
-            );
-        }
-
-        // Check for API errors.
-        if (isset($data['error'])) {
-            return $this->error_response(
-                $data['error']['message'] ?? 'Unknown API error',
-                ['http_code' => $httpcode, 'duration_ms' => $duration, 'error_type' => $data['error']['type'] ?? 'unknown']
-            );
-        }
-
-        // Check for valid response structure.
-        if (!isset($data['choices'][0]['message'])) {
-            return $this->error_response(
-                'Unexpected API response structure',
-                ['http_code' => $httpcode, 'duration_ms' => $duration]
-            );
-        }
-
-        // Parse the response.
-        return $this->parse_response($data, $duration);
     }
+
+    curl_close($ch);
+
+    $data = json_decode($response, true);
+
+    if (json_last_error() !== JSON_ERROR_NONE) {
+        return $this->error_response(
+            'Invalid JSON response from API',
+            [
+                'http_code' => $httpcode,
+                'duration_ms' => $duration,
+                'raw' => substr($response, 0, 500),
+            ]
+        );
+    }
+
+    // Azure / OpenAI API-level error
+    if (isset($data['error'])) {
+        return $this->error_response(
+            $data['error']['message'] ?? 'Unknown API error',
+            [
+                'http_code' => $httpcode,
+                'duration_ms' => $duration,
+                'error_type' => $data['error']['type'] ?? 'unknown',
+            ]
+        );
+    }
+
+    // Expected Chat Completions structure
+    if (!isset($data['choices'][0]['message'])) {
+        return $this->error_response(
+            'Unexpected API response structure',
+            [
+                'http_code' => $httpcode,
+                'duration_ms' => $duration,
+            ]
+        );
+    }
+
+    return $this->parse_response($data, $duration);
+}
+
 
     /**
      * Parse the OpenAI API response.

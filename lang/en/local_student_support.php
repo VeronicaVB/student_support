@@ -124,6 +124,7 @@ $string['message:escalate'] = 'It seems like you might benefit from speaking wit
 $string['message:checkunderstanding'] = 'Before we continue, can you explain in your own words what you\'ve understood so far?';
 $string['message:encouragement'] = 'You\'re making good progress! Let\'s continue exploring this concept.';
 $string['message:refusedirectanswer'] = 'I understand you\'d like the answer, but my role is to help you discover it yourself. Let\'s work through this step by step.';
+$string['message:closingconversation'] = 'Great! I\'m glad I could help. Feel free to come back anytime you have more questions. Good luck with your learning!';
 
 // Course settings.
 $string['course:settings'] = 'Student Support Agent settings';

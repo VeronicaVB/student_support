@@ -22,23 +22,24 @@ use local_student_support\agent\agent_memory;
 defined('MOODLE_INTERNAL') || die();
 
 /**
- * Give example action - CONTROLLED RENDERER.
+ * Give practice problem action - CONTROLLED RENDERER.
  *
- * Generates ONE brief analogous example to illustrate a concept.
- * This is NOT an agent - it does not reason or decide strategy.
+ * Generates ONE practice problem for the student to solve.
+ * This is different from give_example which shows a worked example.
+ * This action gives a problem for the student to attempt themselves.
  *
  * Output constraints:
- * - ONE simple example only
- * - DIFFERENT from student's actual problem
- * - Maximum 3 short paragraphs
- * - Shows method, not answer
- * - Ends with ONE question
+ * - ONE simple problem to solve
+ * - Related to the current topic
+ * - Appropriate difficulty level
+ * - Clear instructions
+ * - Encouragement to try
  *
  * @package   local_student_support
  * @copyright 2025, Veronica Bermegui
  * @license   http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
-class give_example extends base_action {
+class give_practice_problem extends base_action {
 
     /**
      * Get the action name.
@@ -46,7 +47,7 @@ class give_example extends base_action {
      * @return string Action name identifier.
      */
     public function get_name(): string {
-        return 'give_example';
+        return 'give_practice_problem';
     }
 
     /**
@@ -55,13 +56,13 @@ class give_example extends base_action {
      * @return string Human-readable description.
      */
     public function get_description(): string {
-        return 'Provide ONE brief analogous example';
+        return 'Provide ONE practice problem for the student to solve';
     }
 
     /**
      * Check if this is a guidance action.
      *
-     * @return bool True - examples count toward guidance attempts.
+     * @return bool True - practice problems count toward guidance attempts.
      */
     public function is_guidance_action(): bool {
         return true;
@@ -146,39 +147,30 @@ class give_example extends base_action {
         string $studentmessage,
         string $recentcontext
     ): string {
-        // Minimal context.
-        $contextblock = '';
-        if (!empty($recentcontext)) {
-            $lines = explode("\n", $recentcontext);
-            $lastlines = array_slice($lines, -2);
-            $contextblock = "Context: " . implode(" | ", $lastlines);
-        }
-
         return <<<INSTRUCTION
 Topic: {$concept}
 Student said: "{$studentmessage}"
-{$contextblock}
 
-TASK: Give ONE simple example about {$concept}.
+TASK: Give ONE practice problem about {$concept} for the student to solve.
 
 RULES:
-- Maximum 5 sentences total
-- Sentence 1: Brief intro to example (max 10 words)
-- Sentences 2-3: Show the example with simple numbers/scenario
-- Sentence 4: Show the method/reasoning briefly
-- Sentence 5: Ask ONE question about applying this
-- The example must be about {$concept}, NOT a different topic
-- Use DIFFERENT numbers than their problem
+- Maximum 3 sentences total
+- Sentence 1: Brief encouragement (max 8 words)
+- Sentence 2: State the problem clearly with simple numbers
+- Sentence 3: Invite them to try it
+- Do NOT give the answer
+- Do NOT give hints
+- Problem must be about {$concept}
 
 OUTPUT FORMAT EXAMPLE:
-"Here's an example. If we have [scenario], we would [method]. So [result]. Can you see how this applies to your problem?"
+"Great, let's try one! What is 3 × 4? Give it a try and tell me what you get."
 
-Write your response now (max 5 sentences):
+Write your response now (max 3 sentences):
 INSTRUCTION;
     }
 
     /**
-     * Build focused instruction for giving an example.
+     * Build focused instruction for giving a practice problem.
      *
      * Legacy method - used when no context is available.
      *
@@ -188,29 +180,19 @@ INSTRUCTION;
      */
     protected function build_focused_instruction(string $concept, string $studentmessage): string {
         return <<<INSTRUCTION
-TASK: Give ONE brief analogous example about "{$concept}"
+Topic: {$concept}
+Student said: "{$studentmessage}"
 
-STUDENT ASKED: "{$studentmessage}"
+TASK: Give ONE practice problem about {$concept}.
 
-STRICT OUTPUT FORMAT:
-1. First paragraph: Introduce a DIFFERENT but similar example (2-3 sentences)
-2. Second paragraph: Show the method or reasoning briefly (2-3 sentences)
-3. Third paragraph: ONE question asking how they could apply this
+RULES:
+- Max 3 sentences
+- Sentence 1: Brief encouragement
+- Sentence 2: State the problem with simple numbers
+- Sentence 3: Invite them to try
+- Do NOT give the answer
 
-CRITICAL RULES:
-- Use a DIFFERENT example, NOT their actual problem
-- Show the METHOD, not the answer
-- If they ask about problem X, demonstrate with problem Y
-- Keep it brief and simple
-
-FORBIDDEN:
-- Do NOT solve their actual problem
-- Do NOT give multiple examples
-- Do NOT explain the full topic
-- Do NOT use numbered step-by-step lists
-- Do NOT write more than 3 short paragraphs
-
-Generate ONLY the example and ONE question. Stop immediately after.
+Write your response (max 3 sentences):
 INSTRUCTION;
     }
 }

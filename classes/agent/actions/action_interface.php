@@ -71,6 +71,27 @@ interface action_interface {
     ): array;
 
     /**
+     * Execute the action with policy modifiers.
+     *
+     * Called by the action_policy when phase/state-driven routing is used.
+     * Modifiers control behavior like questions, analogies, etc.
+     *
+     * @param array $modifiers Modifiers from action_policy (e.g., no_questions, optional_question).
+     * @param array $context Gathered context from GAME loop.
+     * @param array $analysis Analysis results from GAME loop.
+     * @param agent_config $config Agent configuration.
+     * @param agent_memory $memory Agent memory.
+     * @return array Response with 'success', 'message', and 'metadata'.
+     */
+    public function execute_with_modifiers(
+        array $modifiers,
+        array $context,
+        array $analysis,
+        agent_config $config,
+        agent_memory $memory
+    ): array;
+
+    /**
      * Build the prompt for this action.
      *
      * @param array $context Gathered context.
